@@ -9,7 +9,6 @@ import joblib  # Importamos joblib para cargar el modelo
 import requests
 import io  # Necesario para manejar el contenido binario del modelo desde la URL
 from datetime import datetime # Necesario para 'día' y 'semana_del_año' en el simulador
-# from werkzeug.middleware.dispatcher import DispatcherMiddleware # Eliminamos esta importación
 from werkzeug.serving import run_simple # Necesario para ejecutar la aplicación combinada
 
 # --- 1. Carga de los Datos (DataFrame) ---
@@ -21,6 +20,9 @@ print("Cargando DataFrame desde Google Drive...")
 try:
     df = pd.read_csv(url_data)
     print("DataFrame cargado con éxito.")
+    # Verifica si el DataFrame tiene datos después de cargar
+    if df.empty:
+        print("ADVERTENCIA: El DataFrame se cargó pero está vacío.")
 except Exception as e:
     print(f"Error al cargar el DataFrame: {e}. Se procederá con un DataFrame vacío.")
     # Crea un DataFrame vacío en caso de error para evitar que la aplicación se detenga
@@ -41,8 +43,10 @@ def clasificar_edad(edad):
     elif edad < 200:
         return "Adulto mayor"
 
-if 'EDAD' in df.columns: # Asegurarse de que la columna exista
+if 'EDAD' in df.columns and not df.empty: # Asegurarse de que la columna exista y df no esté vacío
     df['Rango de Edad'] = df['EDAD'].apply(clasificar_edad)
+else:
+    print("ADVERTENCIA: La columna 'EDAD' no se encontró o el DataFrame está vacío. No se creará 'Rango de Edad'.")
 
 # Clasificación por días de espera
 def clasificar_dias(dias):
@@ -67,16 +71,19 @@ def clasificar_dias(dias):
     else:
         return "90+"
 
-if 'DIFERENCIA_DIAS' in df.columns: # Asegurarse de que la columna exista
+if 'DIFERENCIA_DIAS' in df.columns and not df.empty: # Asegurarse de que la columna exista y df no esté vacío
     df['RANGO_DIAS'] = df['DIFERENCIA_DIAS'].apply(clasificar_dias)
+else:
+    print("ADVERTENCIA: La columna 'DIFERENCIA_DIAS' no se encontró o el DataFrame está vacío. No se creará 'RANGO_DIAS'.")
 
 # Transformación para Línea de Tiempo
-if 'DIA_SOLICITACITA' in df.columns: # Asegurarse de que la columna exista
+if 'DIA_SOLICITACITA' in df.columns and not df.empty: # Asegurarse de que la columna exista y df no esté vacío
     df['DIA_SOLICITACITA'] = pd.to_datetime(df['DIA_SOLICITACITA'], errors='coerce')
     df['MES'] = df['DIA_SOLICITACITA'].dt.to_period('M').astype(str)
     citas_por_mes = df.groupby('MES').size().reset_index(name='CANTIDAD_CITAS')
 else:
     citas_por_mes = pd.DataFrame(columns=['MES', 'CANTIDAD_CITAS'])
+    print("ADVERTENCIA: La columna 'DIA_SOLICITACITA' no se encontró o el DataFrame está vacío. 'citas_por_mes' estará vacío.")
 
 
 # --- Creación del mapeo de ESPECIALIDAD a ESPECIALIDAD_cod para el simulador ---
@@ -85,11 +92,11 @@ else:
 # De lo contrario, ordenar alfabéticamente es una buena aproximación para consistencia.
 unique_especialidades = [] # Contendrá los nombres de las especialidades
 especialidad_to_cod = {} # Mapeo de NOMBRE -> CÓDIGO
-# El diccionario 'especialidades' que proporcionaste es CÓDIGO -> NOMBRE
-# Para el dropdown necesitamos NOMBRE -> CÓDIGO para el value, y NOMBRE para el label
-# Así que construimos especialidad_to_cod a partir del df o lo asumimos si el df está vacío
+
 if 'ESPECIALIDAD' in df.columns and not df.empty:
+    # Solo crea el mapeo si la columna existe y hay datos en el DataFrame
     unique_especialidades = sorted(df['ESPECIALIDAD'].unique().tolist())
+    # Asignar códigos basados en el orden alfabético para consistencia si no hay LabelEncoder guardado
     especialidad_to_cod = {especialidad: i for i, especialidad in enumerate(unique_especialidades)}
     print(f"Mapeo de especialidades creado a partir del DataFrame: {especialidad_to_cod}")
 else:
@@ -123,7 +130,8 @@ else:
         15: 'ENDOCRINOLOGIA TUBERCULOSIS'
     }
     especialidad_to_cod = {nombre: codigo for codigo, nombre in especialidades_cod_a_nombre_predefinidas.items()}
-    unique_especialidades = sorted(list(especialidad_to_cod.keys())) # Para compatibilidad si aún se usa
+    unique_especialidades = sorted(list(especialidad_to_cod.keys())) # Asegura que unique_especialidades tenga los nombres
+
 
 # --- Diccionario de especialidades (código a nombre) proporcionado por el usuario ---
 # Este diccionario se usará en el simulador para mostrar el nombre de la especialidad
@@ -293,19 +301,40 @@ app_edad.layout = html.Div([
     Input('histogram-edad', 'clickData')
 )
 def update_pie_chart_edad(clickData):
+    print(f"DEBUG: update_pie_chart_edad - clickData: {clickData}")
     if clickData is None:
         return px.pie(names=[], values=[], title="Seleccione una barra en el histograma", height=500)
 
     selected_range = clickData['points'][0]['x']
+    print(f"DEBUG: update_pie_chart_edad - selected_range: {selected_range}")
+
+    # Asegurarse de que 'Rango de Edad' exista antes de filtrar
+    if 'Rango de Edad' not in df.columns or df.empty:
+        print("DEBUG: update_pie_chart_edad - 'Rango de Edad' no está en df.columns o df está vacío.")
+        return px.pie(names=[], values=[], title="Datos no disponibles para rango de edad", height=500)
+
     filtered_df = df[df['Rango de Edad'] == selected_range].copy()
+    print(f"DEBUG: update_pie_chart_edad - filtered_df shape: {filtered_df.shape}")
+
+    if filtered_df.empty or 'ESPECIALIDAD' not in filtered_df.columns:
+        print(f"DEBUG: update_pie_chart_edad - filtered_df vacío o sin columna 'ESPECIALIDAD' para {selected_range}")
+        return px.pie(names=[], values=[], title=f"No hay datos de especialidad para '{selected_range}'", height=500)
 
     top_especialidades = filtered_df['ESPECIALIDAD'].value_counts().nlargest(5)
-    filtered_df['ESPECIALIDAD_AGRUPADA'] = filtered_df['ESPECIALIDAD'].apply(
-        lambda x: x if x in top_especialidades.index else 'Otras'
-    )
+    print(f"DEBUG: update_pie_chart_edad - Top especialidades: {top_especialidades.index.tolist()}")
 
-    grouped = filtered_df['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
-    grouped.columns = ['ESPECIALIDAD', 'CUENTA']
+    # Solo agrupar si hay especialidades para evitar errores en apply
+    if not top_especialidades.empty:
+        filtered_df['ESPECIALIDAD_AGRUPADA'] = filtered_df['ESPECIALIDAD'].apply(
+            lambda x: x if x in top_especialidades.index else 'Otras'
+        )
+        grouped = filtered_df['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
+        grouped.columns = ['ESPECIALIDAD', 'CUENTA']
+    else:
+        grouped = pd.DataFrame(columns=['ESPECIALIDAD', 'CUENTA']) # DataFrame vacío si no hay especialidades
+
+    print(f"DEBUG: update_pie_chart_edad - Grouped data: {grouped.to_dict('records')}")
+
     return px.pie(
         grouped,
         names='ESPECIALIDAD',
@@ -337,19 +366,38 @@ app_espera.layout = html.Div([
     Input('histogram-espera', 'clickData')
 )
 def update_pie_chart_espera(clickData):
+    print(f"DEBUG: update_pie_chart_espera - clickData: {clickData}")
     if clickData is None:
         return px.pie(names=[], values=[], title="Seleccione una barra en el histograma", height=500)
 
     selected_range = clickData['points'][0]['x']
+    print(f"DEBUG: update_pie_chart_espera - selected_range: {selected_range}")
+
+    if 'RANGO_DIAS' not in df.columns or df.empty:
+        print("DEBUG: update_pie_chart_espera - 'RANGO_DIAS' no está en df.columns o df está vacío.")
+        return px.pie(names=[], values=[], title="Datos no disponibles para rango de días", height=500)
+
     filtered_df = df[df['RANGO_DIAS'] == selected_range].copy()
+    print(f"DEBUG: update_pie_chart_espera - filtered_df shape: {filtered_df.shape}")
+
+    if filtered_df.empty or 'ESPECIALIDAD' not in filtered_df.columns:
+        print(f"DEBUG: update_pie_chart_espera - filtered_df vacío o sin columna 'ESPECIALIDAD' para {selected_range}")
+        return px.pie(names=[], values=[], title=f"No hay datos de especialidad para '{selected_range}' días", height=500)
 
     top_especialidades = filtered_df['ESPECIALIDAD'].value_counts().nlargest(5)
-    filtered_df['ESPECIALIDAD_AGRUPADA'] = filtered_df['ESPECIALIDAD'].apply(
-        lambda x: x if x in top_especialidades.index else 'Otras'
-    )
+    print(f"DEBUG: update_pie_chart_espera - Top especialidades: {top_especialidades.index.tolist()}")
 
-    grouped = filtered_df['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
-    grouped.columns = ['ESPECIALIDAD', 'CUENTA']
+    if not top_especialidades.empty:
+        filtered_df['ESPECIALIDAD_AGRUPADA'] = filtered_df['ESPECIALIDAD'].apply(
+            lambda x: x if x in top_especialidades.index else 'Otras'
+        )
+        grouped = filtered_df['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
+        grouped.columns = ['ESPECIALIDAD', 'CUENTA']
+    else:
+        grouped = pd.DataFrame(columns=['ESPECIALIDAD', 'CUENTA'])
+
+    print(f"DEBUG: update_pie_chart_espera - Grouped data: {grouped.to_dict('records')}")
+
     return px.pie(
         grouped,
         names='ESPECIALIDAD',
@@ -382,13 +430,27 @@ app_modalidad.layout = html.Div([
     Input('pie-modalidad', 'clickData')
 )
 def update_bar_modalidad(clickData):
+    print(f"DEBUG: update_bar_modalidad - clickData: {clickData}")
     if clickData is None:
         return px.bar(x=[], y=[], title="Seleccione una modalidad en el gráfico de pastel")
 
     modalidad = clickData['points'][0]['label']
+    print(f"DEBUG: update_bar_modalidad - selected modalidad: {modalidad}")
+
+    if 'PRESENCIAL_REMOTO' not in df.columns or df.empty:
+        print("DEBUG: update_bar_modalidad - 'PRESENCIAL_REMOTO' no está en df.columns o df está vacío.")
+        return px.bar(x=[], y=[], title="Datos no disponibles para modalidad", height=500)
+
     filtered_df = df[df['PRESENCIAL_REMOTO'] == modalidad]
+    print(f"DEBUG: update_bar_modalidad - filtered_df shape: {filtered_df.shape}")
+
+    if filtered_df.empty or 'ESPECIALIDAD' not in filtered_df.columns or 'DIFERENCIA_DIAS' not in filtered_df.columns:
+        print(f"DEBUG: update_bar_modalidad - filtered_df vacío o sin columnas necesarias para {modalidad}")
+        return px.bar(x=[], y=[], title=f"No hay datos de espera por especialidad para '{modalidad}'", height=500)
+
     mean_wait = filtered_df.groupby('ESPECIALIDAD')['DIFERENCIA_DIAS'].mean().reset_index()
     mean_wait = mean_wait.sort_values(by='DIFERENCIA_DIAS', ascending=False)
+    print(f"DEBUG: update_bar_modalidad - Mean wait data: {mean_wait.to_dict('records')}")
 
     return px.bar(
         mean_wait,
@@ -405,7 +467,7 @@ app_seguro = dash.Dash(__name__, server=server, url_base_pathname='/asegurados/'
 app_seguro.layout = html.Div([
     html.H1("Distribución por Estado del Seguro"),
     dcc.Graph(id='pie-seguro', figure=px.pie(
-        df.dropna(), # Asegurarse de manejar NaNs si los hay en esta columna
+        df.dropna(subset=['SEGURO']) if 'SEGURO' in df.columns and not df.empty else pd.DataFrame(columns=['SEGURO']), # Asegurarse de manejar NaNs si los hay en esta columna
         names='SEGURO',
         title='Distribución de Pacientes: Asegurados vs No Asegurados',
         template='plotly_white'
@@ -424,13 +486,27 @@ app_seguro.layout = html.Div([
     Input('pie-seguro', 'clickData')
 )
 def update_bar_seguro(clickData):
+    print(f"DEBUG: update_bar_seguro - clickData: {clickData}")
     if clickData is None:
         return px.bar(x=[], y=[], title="Seleccione una categoría en el gráfico de pastel")
 
     seguro = clickData['points'][0]['label']
+    print(f"DEBUG: update_bar_seguro - selected seguro: {seguro}")
+
+    if 'SEGURO' not in df.columns or df.empty:
+        print("DEBUG: update_bar_seguro - 'SEGURO' no está en df.columns o df está vacío.")
+        return px.bar(x=[], y=[], title="Datos no disponibles para seguro", height=500)
+
     filtered_df = df[df['SEGURO'] == seguro]
+    print(f"DEBUG: update_bar_seguro - filtered_df shape: {filtered_df.shape}")
+
+    if filtered_df.empty or 'SEXO' not in filtered_df.columns or 'DIFERENCIA_DIAS' not in filtered_df.columns:
+        print(f"DEBUG: update_bar_seguro - filtered_df vacío o sin columnas necesarias para {seguro}")
+        return px.bar(x=[], y=[], title=f"No hay datos de espera por sexo para '{seguro}'", height=500)
+
     mean_wait = filtered_df.groupby('SEXO')['DIFERENCIA_DIAS'].mean().reset_index()
     mean_wait = mean_wait.sort_values(by='DIFERENCIA_DIAS', ascending=False)
+    print(f"DEBUG: update_bar_seguro - Mean wait data: {mean_wait.to_dict('records')}")
 
     fig = px.bar(
         mean_wait,
@@ -467,25 +543,58 @@ app_tiempo.layout = html.Div([
     [Input('grafico-lineal', 'clickData')]
 )
 def actualizar_graficos(clickData):
+    print(f"DEBUG: actualizar_graficos - clickData: {clickData}")
     if clickData is None:
         # Crea figuras vacías para el estado inicial o cuando no hay selección
         return px.pie(names=[], values=[], title="Seleccione un mes"), \
                px.pie(names=[], values=[], title="Seleccione un mes")
 
     mes_seleccionado = pd.to_datetime(clickData['points'][0]['x']).to_period('M').strftime('%Y-%m')
+    print(f"DEBUG: actualizar_graficos - selected mes: {mes_seleccionado}")
+
+    if 'MES' not in df.columns or df.empty:
+        print("DEBUG: actualizar_graficos - 'MES' no está en df.columns o df está vacío.")
+        return px.pie(names=[], values=[], title="Datos no disponibles para el mes", height=500), \
+               px.pie(names=[], values=[], title="Datos no disponibles para el mes", height=500)
+
+
     df_mes = df[df['MES'] == mes_seleccionado]
+    print(f"DEBUG: actualizar_graficos - df_mes shape: {df_mes.shape}")
 
-    top_especialidades = df_mes['ESPECIALIDAD'].value_counts().nlargest(5)
-    df_mes['ESPECIALIDAD_AGRUPADA'] = df_mes['ESPECIALIDAD'].apply(
-        lambda x: x if x in top_especialidades.index else 'Otras'
-    )
+    # Asegurarse de que df_mes no esté vacío antes de continuar
+    if df_mes.empty:
+        print(f"DEBUG: actualizar_graficos - df_mes está vacío para el mes: {mes_seleccionado}")
+        return px.pie(names=[], values=[], title=f"No hay datos para {mes_seleccionado}", height=500), \
+               px.pie(names=[], values=[], title=f"No hay datos para {mes_seleccionado}", height=500)
 
-    grouped = df_mes['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
-    grouped.columns = ['ESPECIALIDAD', 'CUENTA']
-    grouped = grouped.sort_values(by='CUENTA', ascending=False)
+    # Gráfico de Especialidades
+    fig_especialidades = px.pie(names=[], values=[], title=f"No hay datos de especialidad para {mes_seleccionado}", height=500)
+    if 'ESPECIALIDAD' in df_mes.columns:
+        top_especialidades = df_mes['ESPECIALIDAD'].value_counts().nlargest(5)
+        if not top_especialidades.empty:
+            df_mes_copy_esp = df_mes.copy() # Usar una copia para evitar SettingWithCopyWarning
+            df_mes_copy_esp['ESPECIALIDAD_AGRUPADA'] = df_mes_copy_esp['ESPECIALIDAD'].apply(
+                lambda x: x if x in top_especialidades.index else 'Otras'
+            )
+            grouped = df_mes_copy_esp['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
+            grouped.columns = ['ESPECIALIDAD', 'CUENTA']
+            grouped = grouped.sort_values(by='CUENTA', ascending=False)
+            fig_especialidades = px.pie(grouped, names='ESPECIALIDAD', values="CUENTA", title=f'Distribución de Especialidades en {mes_seleccionado}')
+        else:
+            print(f"DEBUG: actualizar_graficos - top_especialidades vacío para {mes_seleccionado}")
+    else:
+        print("DEBUG: actualizar_graficos - Columna 'ESPECIALIDAD' no encontrada en df_mes.")
 
-    fig_especialidades = px.pie(grouped, names='ESPECIALIDAD', values="CUENTA", title=f'Distribución de Especialidades en {mes_seleccionado}')
-    fig_atencion = px.pie(df_mes, names='ATENDIDO', title=f'Estado de Atención en {mes_seleccionado}')
+
+    # Gráfico de Atención
+    fig_atencion = px.pie(names=[], values=[], title=f"No hay datos de atención para {mes_seleccionado}", height=500)
+    if 'ATENDIDO' in df_mes.columns:
+        if not df_mes['ATENDIDO'].empty:
+            fig_atencion = px.pie(df_mes, names='ATENDIDO', title=f'Estado de Atención en {mes_seleccionado}')
+        else:
+            print(f"DEBUG: actualizar_graficos - df_mes['ATENDIDO'] vacío para {mes_seleccionado}")
+    else:
+        print("DEBUG: actualizar_graficos - Columna 'ATENDIDO' no encontrada en df_mes.")
 
     return fig_especialidades, fig_atencion
 
@@ -539,10 +648,12 @@ app_simulador.layout = html.Div([
     prevent_initial_call=True
 )
 def predict_dias_espera(n_clicks, edad, especialidad_cod_input): # Renombramos para mayor claridad
+    print(f"DEBUG: predict_dias_espera - n_clicks: {n_clicks}, edad: {edad}, especialidad_cod_input: {especialidad_cod_input}")
     if n_clicks is None or n_clicks == 0:
         return "" # Estado inicial: no mostrar nada
 
     if modelo_forest is None:
+        print("DEBUG: predict_dias_espera - modelo_forest is None.")
         return html.Div("Error: El modelo de predicción no se pudo cargar. No se puede realizar la predicción.", className="text-red-600 font-bold")
 
     # Validaciones de entrada
@@ -555,10 +666,12 @@ def predict_dias_espera(n_clicks, edad, especialidad_cod_input): # Renombramos p
     today = datetime.now()
     dia = today.day
     semana_del_año = today.isocalendar()[1] # isocalendar()[1] da la semana del año
+    print(f"DEBUG: predict_dias_espera - día: {dia}, semana_del_año: {semana_del_año}")
 
     # La especialidad_cod_input YA es el código, no necesitamos buscarlo en especialidad_to_cod
     # Para mostrar el nombre de la especialidad en el output, usamos el diccionario especialidades_cod_a_nombre
     nombre_especialidad_para_mostrar = especialidades_cod_a_nombre.get(especialidad_cod_input, "Especialidad Desconocida")
+    print(f"DEBUG: predict_dias_espera - nombre_especialidad_para_mostrar: {nombre_especialidad_para_mostrar}")
 
     # Crear el DataFrame de entrada para el modelo
     # Las columnas deben coincidir *exactamente* con el entrenamiento:
@@ -575,12 +688,14 @@ def predict_dias_espera(n_clicks, edad, especialidad_cod_input): # Renombramos p
         'día',
         'semana_del_año'
     ])
+    print(f"DEBUG: predict_dias_espera - input_data for model: \n{input_data}")
 
     try:
         # El modelo predice DIFERENCIA_DIAS (regresión)
         predicted_days = modelo_forest.predict(input_data)[0]
         # Redondear el resultado para una presentación más amigable y asegurar que no sea negativo
         predicted_days_rounded = max(0, round(predicted_days))
+        print(f"DEBUG: predict_dias_espera - Predicted days: {predicted_days_rounded}")
 
         return html.Div([
             html.P(f"Para la especialidad de ", className="inline"),
@@ -589,6 +704,7 @@ def predict_dias_espera(n_clicks, edad, especialidad_cod_input): # Renombramos p
             html.P(f"{predicted_days_rounded} días", className="text-4xl font-extrabold text-green-700 mt-2")
         ], className="prediction-output-text")
     except Exception as e:
+        print(f"ERROR: predict_dias_espera - Error during prediction: {e}")
         return html.Div(f"Error al realizar la predicción: {e}. Asegúrate de que los datos de entrada coincidan con lo que el modelo espera.", className="text-red-600 font-bold")
 
 # --- 6. Ejecutar el servidor (Para Render, Gunicorn ejecutará 'application') ---
