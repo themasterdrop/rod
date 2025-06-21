@@ -14,19 +14,21 @@ hoy = datetime.today()
 dia_actual = hoy.day
 semana_anio = hoy.isocalendar()[1]
 
-# ID del archivo en Google Drive (modelo)
-# IMPORTANT: This file_id_model MUST now point to the .pkl file you SAVED WITH PICKLE!
-file_id_model = "1udHqvIrwCvid9zph897D99ytY_lG-9NZ" # Reemplaza con el ID REAL del modelo GUARDADO CON PICKLE
-drive_url_model = f"https://drive.google.com/uc?export=download&id={file_id_model}"
-modelo_path = "modelo_forest.pkl" # You can keep the filename the same if you overwrite it
+model_download_url = "https://huggingface.co/themasterdrop/simulador_citas_modelo/resolve/main/modelo_forest.pkl"
+modelo_path = "modelo_forest.pkl"
 
 if not os.path.exists(modelo_path):
-    print("Descargando modelo desde Google Drive...")
-    r = requests.get(drive_url_model, stream=True)
-    with open(modelo_path, 'wb') as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            f.write(chunk)
-    print("Modelo descargado.")
+    print("Descargando modelo desde Hugging Face...")
+    try:
+        r = requests.get(model_download_url, stream=True)
+        r.raise_for_status() # Lanza un error para códigos de estado HTTP erróneos (4xx o 5xx)
+        with open(modelo_path, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print("Modelo descargado.")
+    except requests.exceptions.RequestException as e:
+        print(f"Error al descargar el modelo desde Hugging Face: {e}")
+        raise # Re-lanza la excepción para que el despliegue falle
 
 try:
     with open(modelo_path, 'rb') as file:
