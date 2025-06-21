@@ -14,7 +14,7 @@ hoy = datetime.today()
 dia_actual = hoy.day
 semana_anio = hoy.isocalendar()[1]
 
-model_download_url = "https://huggingface.co/themasterdrop/simulador_citas_modelo/resolve/main/modelo_forest.pkl"
+model_download_url = "https://huggingface.co/themasterdrop/simulador_citas_modelo/resolve/main/modelo_forest.pkl?download=true"
 modelo_path = "modelo_forest.pkl"
 
 if not os.path.exists(modelo_path):
