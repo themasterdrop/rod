@@ -18,7 +18,7 @@ dia_actual = hoy.day
 semana_anio = hoy.isocalendar()[1]
 
 # ID del archivo en Google Drive (modelo)
-file_id_model = "1wrdWPjF47w7IE0WkRWMLTVgPWqT3Jpf"  # Reemplaza con tu ID real
+file_id_model = "1swcA1If3_ZAoasHs5PoE_dGcrxzGK9RP"  # Reemplaza con tu ID real
 drive_url_model = f"https://drive.google.com/uc?export=download&id={file_id_model}"
 modelo_path = "modelo_forest.pkl"
 
