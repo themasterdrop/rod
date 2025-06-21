@@ -1,5 +1,5 @@
 import pandas as pd
-from flask import Flask
+from flask import Flask, send_from_directory # Make sure send_from_directory is imported
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
@@ -19,10 +19,26 @@ hoy = datetime.today()
 dia_actual = hoy.day
 semana_anio = hoy.isocalendar()[1]
 
+# Ensure a 'static' directory exists for the logo
+if not os.path.exists('static'):
+    os.makedirs('static')
+
+# Dummy logo file for demonstration if not provided
+# In a real deployment, you'd place your actual logo.png in the 'static' folder
+logo_path = 'static/logo.png'
+if not os.path.exists(logo_path):
+    # Create a dummy image or instruct user to place their logo
+    try:
+        from PIL import Image
+        img = Image.new('RGB', (80, 80), color = 'red')
+        img.save(logo_path)
+        print(f"Dummy logo created at {logo_path}. Please replace it with your actual logo.png.")
+    except ImportError:
+        print("Pillow not installed. Cannot create dummy logo. Please ensure 'static/logo.png' exists.")
 
 
 # ID del archivo en Google Drive
-file_id = "1wrdWPjF47w7IEf0WkRWMLTVgPWqT3Jpf"  # Reemplaza con tu ID real
+file_id = "1wrdWPjF47w7IEf0WkRWMLTVgPWqT3Jpf" # Reemplaza con tu ID real
 drive_url = f"https://drive.google.com/uc?export=download&id={file_id}"
 modelo_path = "modelo_forest.pkl"
 
@@ -86,8 +102,13 @@ df['RANGO_DIAS'] = df['DIFERENCIA_DIAS'].apply(clasificar_dias)
 # Crear servidor Flask compartido
 server = Flask(__name__)
 
-# Ruta raíz
+# Route for serving static files (like your logo.png)
+@server.route('/static/<path:path>')
+def serve_static(path):
+    root_dir = os.getcwd()
+    return send_from_directory(os.path.join(root_dir, 'static'), path)
 
+# Ruta raíz
 @server.route('/')
 def index():
     return render_template_string("""
@@ -167,6 +188,7 @@ def index():
 app_edad = dash.Dash(__name__, server=server,
                      requests_pathname_prefix='/edad/',
                      routes_pathname_prefix='/edad/',
+                     url_base_pathname='/edad/', # ADD THIS LINE
                      serve_locally=False)
 
 app_edad.layout = html.Div([
@@ -214,7 +236,8 @@ def update_pie_chart_edad(clickData):
 app_espera = dash.Dash(__name__, server=server,
                        requests_pathname_prefix='/espera/',
                        routes_pathname_prefix='/espera/',
-                       serve_locally=False) 
+                       url_base_pathname='/espera/', # ADD THIS LINE
+                       serve_locally=False)
 
 
 app_espera.layout = html.Div([
@@ -262,6 +285,7 @@ def update_pie_chart_espera(clickData):
 app_modalidad = dash.Dash(__name__, server=server,
                            requests_pathname_prefix='/modalidad/',
                            routes_pathname_prefix='/modalidad/',
+                           url_base_pathname='/modalidad/', # ADD THIS LINE
                            serve_locally=False)
 
 app_modalidad.layout = html.Div([
@@ -300,13 +324,14 @@ def update_bar_modalidad(clickData):
         title=f"Media de Días de Espera por Especialidad ({modalidad})",
         labels={'DIFERENCIA_DIAS': 'Días de Espera'},
         template='plotly_white'
- )
+   )
 
 
 # App 4: Por Estado de Seguro
 app_seguro = dash.Dash(__name__, server=server,
                        requests_pathname_prefix='/asegurados/',
                        routes_pathname_prefix='/asegurados/',
+                       url_base_pathname='/asegurados/', # ADD THIS LINE
                        serve_locally=False)
 
 app_seguro.layout = html.Div([
@@ -377,13 +402,15 @@ citas_por_mes = df.groupby('MES').size().reset_index(name='CANTIDAD_CITAS')
 app_tiempo = dash.Dash(__name__, server=server,
                          requests_pathname_prefix='/tiempo/',
                          routes_pathname_prefix='/tiempo/',
+                         url_base_pathname='/tiempo/', # ADD THIS LINE
                          serve_locally=False)
+
 app_tiempo.layout = html.Div([
     html.H1("Citas Agendadas por Mes"),
     dcc.Graph(
         id='grafico-lineal',
         figure=px.line(citas_por_mes, x='MES', y='CANTIDAD_CITAS', markers=True,
-                       title='Cantidad de Citas por Mes')
+                        title='Cantidad de Citas por Mes')
     ),
     html.Div([
         dcc.Graph(id='grafico-pie-especialidades'),
@@ -486,6 +513,7 @@ especialidades = {17: 'GERIATRIA',
 simulador_app = dash.Dash(__name__, server=server,
                            requests_pathname_prefix='/simulador/',
                            routes_pathname_prefix='/simulador/',
+                           url_base_pathname='/simulador/', # ADD THIS LINE
                            serve_locally=False)
 
 simulador_app.layout = html.Div([
@@ -533,8 +561,6 @@ def predecir(n_clicks, especialidad, edad, dia, semana_anio):
         return f"Especialidad: {nombre_especialidad} — Tiempo estimado de espera: {prediccion:.2f} días"
 
     return ""
-
-
 
 
 application = DispatcherMiddleware(server, {
