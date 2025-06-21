@@ -2,7 +2,7 @@ services:
   - type: web
     name: multiapp-dash
     env: python
-    pythonVersion: 3.10.13 # Tu versión de Python estable
+    pythonVersion: 3.10.13
     plan: free
-    buildCommand: "" # Mantén esto si no necesitas un comando de build explícito
-    startCommand: gunicorn multi_app:application # ¡Asegúrate de que es EXACTAMENTE esto!
+    buildCommand: ""
+    startCommand: gunicorn multi_app:application
