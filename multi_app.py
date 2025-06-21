@@ -3,46 +3,39 @@ from flask import Flask, render_template_string
 import dash
 from dash import dcc, html, Input, Output
 import plotly.express as px
-# import joblib  # <-- REMOVE THIS LINE or comment it out if you are ONLY using pickle for the main model
 import requests
 import io
 import os
 from datetime import datetime
 import numpy as np
-import pickle # <-- ADD THIS LINE to import the pickle library
+import pickle
 
-# --- 1. Datos y Modelo (sin cambios) ---
-
-# Obtener fecha actual
 hoy = datetime.today()
 dia_actual = hoy.day
 semana_anio = hoy.isocalendar()[1]
 
 # ID del archivo en Google Drive (modelo)
 # IMPORTANT: This file_id_model MUST now point to the .pkl file you SAVED WITH PICKLE!
-file_id_model = "1udHqvIrwCvid9zph897D99ytY_lG-9NZ"  # Reemplaza con el ID REAL del modelo GUARDADO CON PICKLE
+file_id_model = "1udHqvIrwCvid9zph897D99ytY_lG-9NZ" # Reemplaza con el ID REAL del modelo GUARDADO CON PICKLE
 drive_url_model = f"https://drive.google.com/uc?export=download&id={file_id_model}"
 modelo_path = "modelo_forest.pkl" # You can keep the filename the same if you overwrite it
 
 if not os.path.exists(modelo_path):
-    print("Descargando modelo desde Google Drive...")
-    r = requests.get(drive_url_model, stream=True)
-    with open(modelo_path, 'wb') as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            f.write(chunk)
-    print("Modelo descargado.")
+    print("Descargando modelo desde Google Drive...")
+    r = requests.get(drive_url_model, stream=True)
+    with open(modelo_path, 'wb') as f:
+        for chunk in r.iter_content(chunk_size=8192):
+            f.write(chunk)
+    print("Modelo descargado.")
 
-# --- CHANGE STARTS HERE ---
-# Instead of joblib.load, use pickle.load
 try:
     with open(modelo_path, 'rb') as file:
         modelo_forest = pickle.load(file)
     print("¡Modelo cargado con éxito usando pickle!")
 except Exception as e:
     print(f"Error al cargar el modelo con pickle: {e}")
-    raise # Re-lanza la excepción para que Render muestre el error completo
-# --- CHANGE ENDS HERE ---
-
+    raise
+    
 
 # Cargar los datos (DataFrame)
 file_id_data = "1PWTw-akWr59Gu7MoHra5WXMKwllxK9bp"
@@ -143,7 +136,7 @@ especialidades = {17: 'GERIATRIA',
  57: 'TUBERCULOSIS',
  38: 'NUTRICION - MEDICINA',
  22: 'INFECTOLOGIA PEDIATRICA',
- 30: 'NEUMOLOGIA FUNCION RESPIRATORIA',
+ 30: 'NEUMOLOGIA FUNCION RESPONSATORIA',
  39: 'NUTRICION - PEDIATRICA',
  14: 'ENDOCRINOLOGIA PEDIATRICA',
  55: 'SALUD MENTAL ',
@@ -469,7 +462,7 @@ dash.register_page(
         dcc.Graph(
             id='grafico-lineal',
             figure=px.line(citas_por_mes, x='MES', y='CANTIDAD_CITAS', markers=True,
-                            title='Cantidad de Citas por Mes')
+                             title='Cantidad de Citas por Mes')
         ),
         html.Div([
             dcc.Graph(id='grafico-pie-especialidades'),
