@@ -1,4 +1,7 @@
-dash
 pandas
+flask
+dash
 plotly
+requests
+joblib
 gunicorn
