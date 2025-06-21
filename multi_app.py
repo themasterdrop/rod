@@ -1,48 +1,30 @@
 import pandas as pd
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, send_from_directory
 import dash
-from dash import dcc, html, Input, Output
+from dash import dcc, html
+from dash.dependencies import Input, Output
 import plotly.express as px
-import requests
-import io
 import os
-from datetime import datetime
-import numpy as np
-import pickle
+import joblib  # Importamos joblib para cargar el modelo
+import requests
+import io  # Necesario para manejar el contenido binario del modelo desde la URL
+from datetime import datetime # Necesario para 'día' y 'semana_del_año' en el simulador
 
-hoy = datetime.today()
-dia_actual = hoy.day
-semana_anio = hoy.isocalendar()[1]
-
-model_download_url = "https://huggingface.co/themasterdrop/simulador_citas_modelo/resolve/main/modelo_forest.pkl?download=true"
-modelo_path = "modelo_forest.pkl"
-
-if not os.path.exists(modelo_path):
-    print("Descargando modelo desde Hugging Face...")
-    try:
-        r = requests.get(model_download_url, stream=True)
-        r.raise_for_status() # Lanza un error para códigos de estado HTTP erróneos (4xx o 5xx)
-        with open(modelo_path, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print("Modelo descargado.")
-    except requests.exceptions.RequestException as e:
-        print(f"Error al descargar el modelo desde Hugging Face: {e}")
-        raise # Re-lanza la excepción para que el despliegue falle
-
-try:
-    with open(modelo_path, 'rb') as file:
-        modelo_forest = pickle.load(file)
-    print("¡Modelo cargado con éxito usando pickle!")
-except Exception as e:
-    print(f"Error al cargar el modelo con pickle: {e}")
-    raise
-    
-
-# Cargar los datos (DataFrame)
+# --- 1. Carga de los Datos (DataFrame) ---
+# Se mantiene tu URL actual de Google Drive ya que has confirmado que funciona en Render.
 file_id_data = "1PWTw-akWr59Gu7MoHra5WXMKwllxK9bp"
 url_data = f"https://drive.google.com/uc?export=download&id={file_id_data}"
-df = pd.read_csv(url_data)
+
+print("Cargando DataFrame desde Google Drive...")
+try:
+    df = pd.read_csv(url_data)
+    print("DataFrame cargado con éxito.")
+except Exception as e:
+    print(f"Error al cargar el DataFrame: {e}. Se procederá con un DataFrame vacío.")
+    # Crea un DataFrame vacío en caso de error para evitar que la aplicación se detenga
+    df = pd.DataFrame(columns=['EDAD', 'DIFERENCIA_DIAS', 'PRESENCIAL_REMOTO', 'SEGURO', 'SEXO', 'ESPECIALIDAD', 'DIA_SOLICITACITA', 'ATENDIDO'])
+
+# --- 2. Preprocesamiento de Datos para Visualizaciones y Mapeos ---
 
 # Clasificación por edad
 def clasificar_edad(edad):
@@ -57,7 +39,8 @@ def clasificar_edad(edad):
     elif edad < 200:
         return "Adulto mayor"
 
-df['Rango de Edad'] = df['EDAD'].apply(clasificar_edad)
+if 'EDAD' in df.columns: # Asegurarse de que la columna exista
+    df['Rango de Edad'] = df['EDAD'].apply(clasificar_edad)
 
 # Clasificación por días de espera
 def clasificar_dias(dias):
@@ -82,91 +65,78 @@ def clasificar_dias(dias):
     else:
         return "90+"
 
-df['RANGO_DIAS'] = df['DIFERENCIA_DIAS'].apply(clasificar_dias)
+if 'DIFERENCIA_DIAS' in df.columns: # Asegurarse de que la columna exista
+    df['RANGO_DIAS'] = df['DIFERENCIA_DIAS'].apply(clasificar_dias)
 
 # Transformación para Línea de Tiempo
-df['DIA_SOLICITACITA'] = pd.to_datetime(df['DIA_SOLICITACITA'], errors='coerce')
-df['MES'] = df['DIA_SOLICITACITA'].dt.to_period('M').astype(str)
-citas_por_mes = df.groupby('MES').size().reset_index(name='CANTIDAD_CITAS')
+if 'DIA_SOLICITACITA' in df.columns: # Asegurarse de que la columna exista
+    df['DIA_SOLICITACITA'] = pd.to_datetime(df['DIA_SOLICITACITA'], errors='coerce')
+    df['MES'] = df['DIA_SOLICITACITA'].dt.to_period('M').astype(str)
+    citas_por_mes = df.groupby('MES').size().reset_index(name='CANTIDAD_CITAS')
+else:
+    citas_por_mes = pd.DataFrame(columns=['MES', 'CANTIDAD_CITAS'])
 
-# Especialidades para el simulador
-especialidades = {17: 'GERIATRIA',
- 16: 'GASTROENTEROLOGIA',
- 13: 'ENDOCRINOLOGIA',
- 51: 'PSIQUIATRIA',
- 2: 'CARDIOLOGIA',
- 61: 'UROLOGIA',
- 50: 'PSICOLOGIA',
- 6: 'CIRUGIA GENERAL',
- 34: 'NEUROLOGIA',
- 20: 'HEMATOLOGIA',
- 26: 'MEDICINA INTERNA',
- 42: 'OFTALMOLOGIA',
- 54: 'REUMATOLOGIA',
- 4: 'CIRUGIA PLASTICA Y QUEMADOS',
- 33: 'NEUROCIRUGIA',
- 48: 'PEDIATRIA GENERAL',
- 27: 'NEFROLOGIA',
- 35: 'NEUROLOGIA PEDIATRICA',
- 40: 'OBSTETRICIA',
- 29: 'NEUMOLOGIA',
- 43: 'ONCOLOGIA GINECOLOGIA',
- 28: 'NEONATOLOGIA',
- 21: 'INFECTOLOGIA',
- 0: 'ADOLESCENTE',
- 18: 'GINECOLOGIA',
- 10: 'DERMATOLOGIA',
- 8: 'CIRUGIA PEDIATRICA',
- 56: 'TRAUMATOLOGIA',
- 47: 'PATOLOGIA MAMARIA',
- 46: 'OTORRINOLARINGOLOGIA',
- 12: 'ECOGRAFIA',
- 25: 'MEDICINA FÍSICA Y REHABILITACIÓN',
- 31: 'NEUMOLOGIA PEDIATRICA',
- 44: 'ONCOLOGIA MEDICA',
- 5: 'CIRUGIA CABEZA Y CUELLO',
- 7: 'CIRUGIA MAXILO-FACIAL',
- 19: 'GINECOLOGIA DE ALTO RIESGO',
- 36: 'NEUROPSICOLOGIA',
- 52: 'PUERPERIO',
- 59: 'UNIDAD DEL DOLOR Y CUIDADOS PALIATIVOS',
- 3: 'CARDIOLOGIA PEDIATRICA',
- 41: 'ODONTOLOGIA',
- 53: 'RADIOTERAPIA',
- 9: 'CIRUGIA TORAXICA',
- 37: 'NUTRICION - ENDOCRINOLOGIA',
- 57: 'TUBERCULOSIS',
- 38: 'NUTRICION - MEDICINA',
- 22: 'INFECTOLOGIA PEDIATRICA',
- 30: 'NEUMOLOGIA FUNCION RESPONSATORIA',
- 39: 'NUTRICION - PEDIATRICA',
- 14: 'ENDOCRINOLOGIA PEDIATRICA',
- 55: 'SALUD MENTAL ',
- 23: 'INFERTILIDAD',
- 45: 'ONCOLOGIA QUIRURGICA',
- 32: 'NEUMOLOGIA TEST DE CAMINATA',
- 49: 'PLANIFICACION FAMILIAR',
- 24: 'MEDICINA ALTERNATIVA',
- 1: 'ANESTESIOLOGIA',
- 11: 'DERMATOLOGIA PEDIATRICA',
- 58: 'TUBERCULOSIS PEDIATRICA',
- 62: 'ZPRUEBA',
- 60: 'URODINAMIA',
- 15: 'ENDOCRINOLOGIA TUBERCULOSIS'}
 
-# --- 2. Servidor Flask y Aplicación Dash Principal ---
+# --- Creación del mapeo de ESPECIALIDAD a ESPECIALIDAD_cod para el simulador ---
+# CRÍTICO: Este mapeo DEBE ser consistente con cómo se codificó 'ESPECIALIDAD'
+# cuando se entrenó el modelo. Si usaste un LabelEncoder y lo guardaste, cárgalo.
+# De lo contrario, ordenar alfabéticamente es una buena aproximación para consistencia.
+unique_especialidades = []
+especialidad_to_cod = {}
+if 'ESPECIALIDAD' in df.columns:
+    unique_especialidades = sorted(df['ESPECIALIDAD'].unique().tolist())
+    especialidad_to_cod = {especialidad: i for i, especialidad in enumerate(unique_especialidades)}
+    print(f"Mapeo de especialidades creado: {especialidad_to_cod}")
+else:
+    print("La columna 'ESPECIALIDAD' no se encontró en el DataFrame. El simulador podría no funcionar correctamente.")
+
+
+# --- 3. Carga del Modelo de Machine Learning ---
+# URL para el modelo en Hugging Face
+HF_MODEL_URL = "https://huggingface.co/themasterdrop/simulador_citas_modelo/resolve/main/modelo_forest.pkl?download=true"
+
+print("Descargando modelo desde Hugging Face...")
+modelo_forest = None # Inicializar a None en caso de error
+
+try:
+    response = requests.get(HF_MODEL_URL)
+    response.raise_for_status() # Lanza una excepción si la descarga no es exitosa
+
+    # Usar io.BytesIO para tratar el contenido binario de la respuesta como un archivo en memoria
+    model_bytes = io.BytesIO(response.content)
+    modelo_forest = joblib.load(model_bytes) # Carga el modelo con joblib
+    print("¡Modelo cargado con éxito usando joblib!")
+    # Opcional: imprimir las características que el modelo espera, si el modelo tiene este atributo
+    if hasattr(modelo_forest, 'feature_names_in_'):
+        print(f"Características esperadas por el modelo: {modelo_forest.feature_names_in_}")
+    else:
+        print("El modelo no tiene 'feature_names_in_'. Asegúrate de que las columnas de entrada para la predicción coincidan con el entrenamiento.")
+
+except requests.exceptions.RequestException as e:
+    print(f"ERROR al descargar el modelo desde Hugging Face: {e}")
+except Exception as e: # Captura cualquier otro error, incluyendo errores específicos de joblib.load
+    print(f"ERROR inesperado al cargar el modelo con joblib: {e}")
+    print("Asegúrate de que el archivo .pkl fue guardado correctamente con joblib y es compatible con el entorno.")
+
+
+# --- 4. Configuración del Servidor Flask y las Aplicaciones Dash ---
 
 server = Flask(__name__)
-# Inicializa la aplicación Dash principal con use_pages=True
-app = dash.Dash(__name__, server=server, use_pages=True, pages_folder="", suppress_callback_exceptions=True)
 
-# Ruta raíz para el menú principal
+# Ruta para servir archivos estáticos (como el logo.png)
+@server.route('/static/<path:filename>')
+def static_files(filename):
+    # Asegúrate de que la carpeta 'static' existe en la raíz de tu proyecto
+    return send_from_directory(os.path.join(server.root_path, 'static'), filename)
+
+# Página principal de Flask con enlaces a las apps Dash
 @server.route('/')
 def index():
     return render_template_string("""
     <html>
     <head>
         <title>Bienvenido</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             body {
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -176,7 +146,7 @@ def index():
                 color: #333;
             }
             h2 {
-                    color: #2c3e50;
+                color: #2c3e50;
             }
             .logo {
                 width: 80px;
@@ -228,47 +198,36 @@ def index():
                 <a href="/modalidad/">Modalidad de Atención</a>
                 <a href="/asegurados/">Estado del Seguro</a>
                 <a href="/tiempo/">Línea de Tiempo</a>
-                <a href="/simulador/">Simulador de Tiempo de Espera</a>
+                <a href="/simulador/">Simulador de Citas</a> <!-- Enlace al nuevo simulador -->
             </div>
         </div>
     </body>
     </html>
     """)
 
-# El "layout" principal de la aplicación Dash que contendrá el contenido de la página actual
-app.layout = html.Div([
-    dcc.Location(id='url', refresh=False),
-    html.Div(id='page-content', children=dash.page_container) # Aquí se renderizarán las páginas
+# --- 5. Definición y Registro de Aplicaciones Dash ---
+
+# App 1: Distribución por Rango de Edad
+app_edad = dash.Dash(__name__, server=server, url_base_pathname='/edad/')
+app_edad.layout = html.Div([
+    html.H1("Distribución por Rango de Edad"),
+    dcc.Graph(id='histogram-edad', figure=px.histogram(
+        df,
+        x='Rango de Edad',
+        category_orders={'Rango de Edad': ["Niño", "Adolescente", "Joven", "Adulto", "Adulto mayor"]},
+        title='Distribución de edades de los pacientes',
+        labels={'Rango de Edad': 'Rango de Edad'},
+        template='plotly_white'
+    )),
+    dcc.Graph(id='pie-chart-edad', figure=px.pie(
+        names=[], values=[], title="Seleccione una barra en el histograma"
+    )),
+    html.Div(dcc.Link('Volver a la Página Principal', href='/', style={'display': 'inline-block', 'marginTop': '20px', 'padding': '10px 20px', 'backgroundColor': '#f39c12', 'color': 'white', 'textDecoration': 'none', 'borderRadius': '5px'}))
 ])
 
-
-# --- 3. Registro de Páginas Dash con sus Layouts y Callbacks ---
-
-# App 1: Por Rango de Edad
-dash.register_page(
-    "edad_page",
-    path="/edad/",
-    name="Distribución por Edad",
-    layout=html.Div([
-        html.H1("Distribución por Rango de Edad"),
-        dcc.Graph(id='histogram-edad', figure=px.histogram(
-            df,
-            x='Rango de Edad',
-            category_orders={'Rango de Edad': ["Niño", "Adolescente", "Joven", "Adulto", "Adulto mayor"]},
-            title='Distribución de edades de los pacientes del hospital María Auxiliadora',
-            labels={'Rango de Edad': 'Rango de Edad'},
-            template='plotly_white'
-        )),
-        dcc.Graph(id='pie-chart-edad', figure=px.pie(
-            names=[], values=[], title="Seleccione una barra en el histograma"
-        ))
-    ])
-)
-
-@app.callback( # Las callbacks ahora pertenecen a la única 'app'
+@app_edad.callback(
     Output('pie-chart-edad', 'figure'),
-    Input('histogram-edad', 'clickData'),
-    prevent_initial_call=True # Importante para evitar callbacks al cargar la página
+    Input('histogram-edad', 'clickData')
 )
 def update_pie_chart_edad(clickData):
     if clickData is None:
@@ -292,32 +251,27 @@ def update_pie_chart_edad(clickData):
         height=600
     )
 
+# App 2: Distribución por Tiempo de Espera
+app_espera = dash.Dash(__name__, server=server, url_base_pathname='/espera/')
+app_espera.layout = html.Div([
+    html.H1("Distribución por Tiempo de Espera"),
+    dcc.Graph(id='histogram-espera', figure=px.histogram(
+        df,
+        x='RANGO_DIAS',
+        category_orders={'RANGO_DIAS': ["0-9", "10-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70-79", "80-89", "90+"]},
+        title='Distribución de la Cantidad de Pacientes según su Tiempo de Espera',
+        labels={'RANGO_DIAS': 'Rango de Días'},
+        template='plotly_white'
+    )),
+    dcc.Graph(id='pie-chart-espera', figure=px.pie(
+        names=[], values=[], title="Seleccione una barra en el histograma"
+    )),
+    html.Div(dcc.Link('Volver a la Página Principal', href='/', style={'display': 'inline-block', 'marginTop': '20px', 'padding': '10px 20px', 'backgroundColor': '#f39c12', 'color': 'white', 'textDecoration': 'none', 'borderRadius': '5px'}))
+])
 
-# App 2: Por Rango de Días de Espera
-dash.register_page(
-    "espera_page",
-    path="/espera/",
-    name="Tiempos de Espera",
-    layout=html.Div([
-        html.H1("Distribución por Tiempo de Espera"),
-        dcc.Graph(id='histogram-espera', figure=px.histogram(
-            df,
-            x='RANGO_DIAS',
-            category_orders={'RANGO_DIAS': ["0-9", "10-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70-79", "80-89", "90+"]},
-            title='Distribución de la Cantidad de Pacientes según su Tiempo de Espera',
-            labels={'RANGO_DIAS': 'Rango de Días'},
-            template='plotly_white'
-        )),
-        dcc.Graph(id='pie-chart-espera', figure=px.pie(
-            names=[], values=[], title="Seleccione una barra en el histograma"
-        ))
-    ])
-)
-
-@app.callback(
+@app_espera.callback(
     Output('pie-chart-espera', 'figure'),
-    Input('histogram-espera', 'clickData'),
-    prevent_initial_call=True
+    Input('histogram-espera', 'clickData')
 )
 def update_pie_chart_espera(clickData):
     if clickData is None:
@@ -341,33 +295,28 @@ def update_pie_chart_espera(clickData):
         height=600
     )
 
+# App 3: Distribución por Modalidad de Cita
+app_modalidad = dash.Dash(__name__, server=server, url_base_pathname='/modalidad/')
+app_modalidad.layout = html.Div([
+    html.H1("Distribución por Modalidad de Cita"),
+    dcc.Graph(id='pie-modalidad', figure=px.pie(
+        df,
+        names='PRESENCIAL_REMOTO',
+        title='Distribución de Citas: Remotas vs Presenciales',
+        template='plotly_white'
+    )),
+    dcc.Graph(id='bar-especialidad-modalidad', figure=px.bar(
+        pd.DataFrame(columns=['ESPECIALIDAD', 'DIFERENCIA_DIAS']),
+        x='ESPECIALIDAD',
+        y='DIFERENCIA_DIAS',
+        title="Seleccione una modalidad en el gráfico de pastel"
+    )),
+    html.Div(dcc.Link('Volver a la Página Principal', href='/', style={'display': 'inline-block', 'marginTop': '20px', 'padding': '10px 20px', 'backgroundColor': '#f39c12', 'color': 'white', 'textDecoration': 'none', 'borderRadius': '5px'}))
+])
 
-# App 3: Por Modalidad de Cita
-dash.register_page(
-    "modalidad_page",
-    path="/modalidad/",
-    name="Modalidad de Atención",
-    layout=html.Div([
-        html.H1("Distribución por Modalidad de Cita"),
-        dcc.Graph(id='pie-modalidad', figure=px.pie(
-            df,
-            names='PRESENCIAL_REMOTO',
-            title='Distribución de Citas: Remotas vs Presenciales',
-            template='plotly_white'
-        )),
-        dcc.Graph(id='bar-especialidad-modalidad', figure=px.bar(
-            pd.DataFrame(columns=['ESPECIALIDAD', 'DIFERENCIA_DIAS']),
-            x='ESPECIALIDAD',
-            y='DIFERENCIA_DIAS',
-            title="Seleccione una modalidad en el gráfico de pastel"
-        ))
-    ])
-)
-
-@app.callback(
+@app_modalidad.callback(
     Output('bar-especialidad-modalidad', 'figure'),
-    Input('pie-modalidad', 'clickData'),
-    prevent_initial_call=True
+    Input('pie-modalidad', 'clickData')
 )
 def update_bar_modalidad(clickData):
     if clickData is None:
@@ -388,53 +337,35 @@ def update_bar_modalidad(clickData):
     )
 
 
-# App 4: Por Estado de Seguro
-dash.register_page(
-    "seguro_page",
-    path="/asegurados/",
-    name="Estado del Seguro",
-    layout=html.Div([
-        html.H1("Distribución por Estado del Seguro"),
-        dcc.Graph(id='pie-seguro', figure=px.pie(
-            df.dropna(),
-            names='SEGURO',
-            title='Distribución de Pacientes: Asegurados vs No Asegurados',
-            template='plotly_white'
-        )),
-        dcc.Graph(id='bar-espera-seguro', figure=px.bar(
-            pd.DataFrame(columns=['SEXO', 'DIFERENCIA_DIAS']),
-            x='SEXO',
-            y='DIFERENCIA_DIAS',
-            title="Seleccione una modalidad en el gráfico de pastel"
-        ))
-    ])
-)
+# App 4: Distribución por Estado del Seguro (Corregido nombre de la instancia a app_seguro)
+app_seguro = dash.Dash(__name__, server=server, url_base_pathname='/asegurados/')
+app_seguro.layout = html.Div([
+    html.H1("Distribución por Estado del Seguro"),
+    dcc.Graph(id='pie-seguro', figure=px.pie(
+        df.dropna(), # Asegurarse de manejar NaNs si los hay en esta columna
+        names='SEGURO',
+        title='Distribución de Pacientes: Asegurados vs No Asegurados',
+        template='plotly_white'
+    )),
+    dcc.Graph(id='bar-espera-seguro', figure=px.bar(
+        pd.DataFrame(columns=['SEXO', 'DIFERENCIA_DIAS']),
+        x='SEXO',
+        y='DIFERENCIA_DIAS',
+        title="Seleccione una categoría en el gráfico de pastel"
+    )),
+    html.Div(dcc.Link('Volver a la Página Principal', href='/', style={'display': 'inline-block', 'marginTop': '20px', 'padding': '10px 20px', 'backgroundColor': '#f39c12', 'color': 'white', 'textDecoration': 'none', 'borderRadius': '5px'}))
+])
 
-@app.callback(
+@app_seguro.callback( # Callback asociada a app_seguro
     Output('bar-espera-seguro', 'figure'),
-    Input('pie-seguro', 'clickData'),
-    prevent_initial_call=True
+    Input('pie-seguro', 'clickData')
 )
 def update_bar_seguro(clickData):
-    if clickData is None or 'label' not in clickData['points'][0]:
-        return px.bar(
-            pd.DataFrame(columns=['SEXO', 'DIFERENCIA_DIAS']),
-            x='SEXO',
-            y='DIFERENCIA_DIAS',
-            title="Seleccione una modalidad en el gráfico de pastel"
-        )
+    if clickData is None:
+        return px.bar(x=[], y=[], title="Seleccione una categoría en el gráfico de pastel")
 
     seguro = clickData['points'][0]['label']
     filtered_df = df[df['SEGURO'] == seguro]
-
-    if filtered_df.empty:
-        return px.bar(
-            pd.DataFrame(columns=['SEXO', 'DIFERENCIA_DIAS']),
-            x='SEXO',
-            y='DIFERENCIA_DIAS',
-            title=f"No hay datos para {seguro}"
-        )
-
     mean_wait = filtered_df.groupby('SEXO')['DIFERENCIA_DIAS'].mean().reset_index()
     mean_wait = mean_wait.sort_values(by='DIFERENCIA_DIAS', ascending=False)
 
@@ -446,42 +377,37 @@ def update_bar_seguro(clickData):
         labels={'DIFERENCIA_DIAS': 'Días de Espera'},
         template='plotly_white'
     )
-
-    y_min = mean_wait['DIFERENCIA_DIAS'].min() - 1
-    y_max = mean_wait['DIFERENCIA_DIAS'].max() + 1
-    fig.update_yaxes(range=[y_min, y_max])
-
+    # Considera ajustar este rango dinámicamente si tus datos varían mucho
+    fig.update_yaxes(range=[mean_wait['DIFERENCIA_DIAS'].min() - 1, mean_wait['DIFERENCIA_DIAS'].max() + 1] if not mean_wait.empty else [0, 1])
     return fig
 
 
-# App 5: Línea de Tiempo
-dash.register_page(
-    "tiempo_page",
-    path="/tiempo/",
-    name="Línea de Tiempo",
-    layout=html.Div([
-        html.H1("Citas Agendadas por Mes"),
-        dcc.Graph(
-            id='grafico-lineal',
-            figure=px.line(citas_por_mes, x='MES', y='CANTIDAD_CITAS', markers=True,
-                             title='Cantidad de Citas por Mes')
-        ),
-        html.Div([
-            dcc.Graph(id='grafico-pie-especialidades'),
-            dcc.Graph(id='grafico-pie-atencion')
-        ])
-    ])
-)
+# App 5: Línea de Tiempo (Citas Agendadas por Mes - Corregido nombre de la instancia a app_tiempo)
+app_tiempo = dash.Dash(__name__, server=server, url_base_pathname='/tiempo/')
+app_tiempo.layout = html.Div([
+    html.H1("Citas Agendadas por Mes"),
+    dcc.Graph(
+        id='grafico-lineal',
+        figure=px.line(citas_por_mes, x='MES', y='CANTIDAD_CITAS', markers=True,
+                         title='Cantidad de Citas por Mes')
+    ),
+    html.Div([
+        dcc.Graph(id='grafico-pie-especialidades'),
+        dcc.Graph(id='grafico-pie-atencion')
+    ]),
+    html.Div(dcc.Link('Volver a la Página Principal', href='/', style={'display': 'inline-block', 'marginTop': '20px', 'padding': '10px 20px', 'backgroundColor': '#f39c12', 'color': 'white', 'textDecoration': 'none', 'borderRadius': '5px'}))
+])
 
-@app.callback(
+@app_tiempo.callback(
     [Output('grafico-pie-especialidades', 'figure'),
      Output('grafico-pie-atencion', 'figure')],
-    [Input('grafico-lineal', 'clickData')],
-    prevent_initial_call=True
+    [Input('grafico-lineal', 'clickData')]
 )
 def actualizar_graficos(clickData):
     if clickData is None:
-        return px.pie(names=[], values=[], title="Seleccione un mes"), px.pie(names=[], values=[], title="Seleccione un mes")
+        # Crea figuras vacías para el estado inicial o cuando no hay selección
+        return px.pie(names=[], values=[], title="Seleccione un mes"), \
+               px.pie(names=[], values=[], title="Seleccione un mes")
 
     mes_seleccionado = pd.to_datetime(clickData['points'][0]['x']).to_period('M').strftime('%Y-%m')
     df_mes = df[df['MES'] == mes_seleccionado]
@@ -501,59 +427,92 @@ def actualizar_graficos(clickData):
     return fig_especialidades, fig_atencion
 
 
-# App 6: Simulador de Tiempo de Espera
-dash.register_page(
-    "simulador_page",
-    path="/simulador/",
-    name="Simulador de Tiempo de Espera",
-    layout=html.Div([
-        html.H2("Simulador de Tiempo de Espera de Citas"),
+# --- App 6: Simulador de Tiempo de Espera Estimado (Regresión) ---
+app_simulador = dash.Dash(__name__, server=server, url_base_pathname='/simulador/')
+app_simulador.layout = html.Div([
+    html.H1("Simulador de Tiempo de Espera Estimado"),
+    html.Div([
+        html.Label("Edad:"),
+        dcc.Input(id='sim-input-edad', type='number', value=30, min=0, max=120, className="input-field"),
+        html.Br(), # Salto de línea para mejor diseño
         html.Label("Especialidad:"),
         dcc.Dropdown(
-            id='input-especialidad',
-            options=[{'label': k, 'value': v} for k, v in especialidades.items()],
-            value=1,
-            placeholder="Selecciona una especialidad"
+            id='sim-input-especialidad',
+            options=[{'label': i, 'value': i} for i in unique_especialidades],
+            value=unique_especialidades[0] if unique_especialidades else None, # Establecer un valor por defecto si hay especialidades
+            placeholder="Selecciona una especialidad",
+            className="dropdown-field"
         ),
-        html.Label("Edad:"),
-        dcc.Input(id='input-edad', type='number', value=30),
-        html.Label("Día:"),
-        dcc.Input(id='input-dia', type='number', value=dia_actual),
-        html.Label("Semana del año:"),
-        dcc.Input(id='input-semana_anio', type='number', value=semana_anio),
-        html.Br(),
-        html.Button("Predecir", id='btn-predecir', n_clicks=0),
-        html.Div(id='output-prediccion')
-    ])
-)
+        html.Br(), # Salto de línea para mejor diseño
+        html.Button('Predecir Tiempo de Espera', id='sim-predict-button', n_clicks=0, className="button-predict"),
+        html.Div(id='sim-output-prediction', style={'marginTop': '20px', 'fontSize': '20px', 'fontWeight': 'bold', 'color': '#3498db'})
+    ], style={'padding': '20px', 'border': '1px solid #ddd', 'borderRadius': '8px', 'maxWidth': '500px', 'margin': '20px auto', 'backgroundColor': '#fff', 'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'}),
+    html.Br(), # Salto de línea
+    # Enlace para volver al inicio
+    html.Div(dcc.Link('Volver a la Página Principal', href='/', style={'display': 'inline-block', 'marginTop': '20px', 'padding': '10px 20px', 'backgroundColor': '#f39c12', 'color': 'white', 'textDecoration': 'none', 'borderRadius': '5px'}))
+], style={'textAlign': 'center', 'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#f4f6f8', 'padding': '20px'})
 
-@app.callback(
-    Output('output-prediccion', 'children'),
-    Input('btn-predecir', 'n_clicks'),
-    Input('input-especialidad', 'value'),
-    Input('input-edad', 'value'),
-    Input('input-dia', 'value'),
-    Input('input-semana_anio', 'value'),
+
+@app_simulador.callback(
+    Output('sim-output-prediction', 'children'),
+    Input('sim-predict-button', 'n_clicks'),
+    Input('sim-input-edad', 'value'),
+    Input('sim-input-especialidad', 'value'),
     prevent_initial_call=True
 )
-def predecir(n_clicks, especialidad, edad, dia, semana_anio):
-    if n_clicks > 0:
-        if edad is None or edad < 0 or edad > 120:
-            return "Edad no válida."
-        entrada = [[
-            especialidad, edad, dia, semana_anio
-        ]]
-        prediccion = modelo_forest.predict(entrada)[0]
-        nombre_especialidad = especialidades.get(especialidad, "Desconocida")
-        return f"Especialidad: {nombre_especialidad} — Tiempo estimado de espera: {prediccion:.2f} días"
-    return ""
+def predict_dias_espera(n_clicks, edad, especialidad):
+    if n_clicks is None or n_clicks == 0:
+        return "" # Estado inicial: no mostrar nada
 
+    if modelo_forest is None:
+        return "Error: El modelo de predicción no se pudo cargar. No se puede realizar la predicción."
+    if edad is None or especialidad is None:
+        return "Por favor, ingrese todos los valores para la predicción."
 
-# --- 4. Ejecución de la Aplicación ---
+    # Obtener día y semana_del_año de la fecha actual para la predicción
+    # Tu modelo usa 'día' y 'semana_del_año'
+    today = datetime.now()
+    dia = today.day
+    semana_del_año = today.isocalendar()[1]
+
+    # Codificar la especialidad usando el mapeo que creamos
+    especialidad_cod = especialidad_to_cod.get(especialidad)
+    if especialidad_cod is None:
+        return f"Error: La especialidad '{especialidad}' no está en la lista de especialidades conocidas para la predicción."
+
+    # Crear el DataFrame de entrada para el modelo
+    # Las columnas deben coincidir *exactamente* con el entrenamiento:
+    # ['ESPECIALIDAD_cod', 'EDAD', 'día', 'semana_del_año']
+    input_data = pd.DataFrame([[
+        especialidad_cod,
+        edad,
+        dia,
+        semana_del_año
+    ]],
+    columns=[
+        'ESPECIALIDAD_cod',
+        'EDAD',
+        'día',
+        'semana_del_año'
+    ])
+
+    try:
+        # El modelo predice DIFERENCIA_DIAS (regresión)
+        predicted_days = modelo_forest.predict(input_data)[0]
+        # Redondear el resultado para una presentación más amigable
+        predicted_days_rounded = max(0, round(predicted_days)) # Asegurar que no sea negativo
+
+        return f"El tiempo de espera estimado para esta cita es de **{predicted_days_rounded} días**."
+    except Exception as e:
+        return f"Error al realizar la predicción: {e}. Asegúrate de que los datos de entrada coincidan con lo que el modelo espera."
+
+# --- 6. Ejecutar el servidor (Para Render, Gunicorn ejecutará 'application') ---
+# 'application' es el nombre que Gunicorn buscará para iniciar tu app en Render.
+# Necesita ser la instancia de Flask que contiene todas tus Dash apps.
+application = server
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8050))
-    app.run_server(host='0.0.0.0', port=port, debug=True) # Para desarrollo local
-
-# Para Render, Gunicorn ejecutará app.server
-application = app.server
+    # Este bloque solo se ejecuta cuando corres el script localmente (python multi_app.py)
+    # No se ejecuta en el entorno de Render cuando Gunicorn lo inicia.
+    port = int(os.environ.get("PORT", 8050)) # Render asigna un puerto, localmente usa 8050
+    server.run(host='0.0.0.0', port=port, debug=True)
