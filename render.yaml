@@ -2,7 +2,7 @@ services:
   - type: web
     name: multiapp-dash
     env: python
-    pythonVersion: 3.10.13
+    pythonVersion: 3.11.13
     plan: free
     buildCommand: ""
     startCommand: gunicorn multi_app:application
