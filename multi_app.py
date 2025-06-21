@@ -9,6 +9,8 @@ import joblib  # Importamos joblib para cargar el modelo
 import requests
 import io  # Necesario para manejar el contenido binario del modelo desde la URL
 from datetime import datetime # Necesario para 'día' y 'semana_del_año' en el simulador
+# from werkzeug.middleware.dispatcher import DispatcherMiddleware # Eliminamos esta importación
+from werkzeug.serving import run_simple # Necesario para ejecutar la aplicación combinada
 
 # --- 1. Carga de los Datos (DataFrame) ---
 # Se mantiene tu URL actual de Google Drive ya que has confirmado que funciona en Render.
@@ -81,14 +83,75 @@ else:
 # CRÍTICO: Este mapeo DEBE ser consistente con cómo se codificó 'ESPECIALIDAD'
 # cuando se entrenó el modelo. Si usaste un LabelEncoder y lo guardaste, cárgalo.
 # De lo contrario, ordenar alfabéticamente es una buena aproximación para consistencia.
-unique_especialidades = []
-especialidad_to_cod = {}
-if 'ESPECIALIDAD' in df.columns:
+unique_especialidades = [] # Contendrá los nombres de las especialidades
+especialidad_to_cod = {} # Mapeo de NOMBRE -> CÓDIGO
+# El diccionario 'especialidades' que proporcionaste es CÓDIGO -> NOMBRE
+# Para el dropdown necesitamos NOMBRE -> CÓDIGO para el value, y NOMBRE para el label
+# Así que construimos especialidad_to_cod a partir del df o lo asumimos si el df está vacío
+if 'ESPECIALIDAD' in df.columns and not df.empty:
     unique_especialidades = sorted(df['ESPECIALIDAD'].unique().tolist())
     especialidad_to_cod = {especialidad: i for i, especialidad in enumerate(unique_especialidades)}
-    print(f"Mapeo de especialidades creado: {especialidad_to_cod}")
+    print(f"Mapeo de especialidades creado a partir del DataFrame: {especialidad_to_cod}")
 else:
-    print("La columna 'ESPECIALIDAD' no se encontró en el DataFrame. El simulador podría no funcionar correctamente.")
+    print("La columna 'ESPECIALIDAD' no se encontró en el DataFrame o el DataFrame está vacío.")
+    print("Usando un mapeo de especialidades predefinido para el simulador.")
+    # Si el DataFrame está vacío o no tiene la columna, usa un mapeo predefinido
+    # NOTA: Este mapeo DEBE ser el que usaste para entrenar tu modelo.
+    # El usuario proporcionó un diccionario {código: nombre}, lo invertimos aquí.
+    especialidades_cod_a_nombre_predefinidas = {
+        17: 'GERIATRIA', 16: 'GASTROENTEROLOGIA', 13: 'ENDOCRINOLOGIA', 51: 'PSIQUIATRIA',
+        2: 'CARDIOLOGIA', 61: 'UROLOGIA', 50: 'PSICOLOGIA', 6: 'CIRUGIA GENERAL',
+        34: 'NEUROLOGIA', 20: 'HEMATOLOGIA', 26: 'MEDICINA INTERNA', 42: 'OFTALMOLOGIA',
+        54: 'REUMATOLOGIA', 4: 'CIRUGIA PLASTICA Y QUEMADOS', 33: 'NEUROCIRUGIA',
+        48: 'PEDIATRIA GENERAL', 27: 'NEFROLOGIA', 35: 'NEUROLOGIA PEDIATRICA',
+        40: 'OBSTETRICIA', 29: 'NEUMOLOGIA', 43: 'ONCOLOGIA GINECOLOGIA',
+        28: 'NEONATOLOGIA', 21: 'INFECTOLOGIA', 0: 'ADOLESCENTE', 18: 'GINECOLOGIA',
+        10: 'DERMATOLOGIA', 8: 'CIRUGIA PEDIATRICA', 56: 'TRAUMATOLOGIA',
+        47: 'PATOLOGIA MAMARIA', 46: 'OTORRINOLARINGOLOGIA', 12: 'ECOGRAFIA',
+        25: 'MEDICINA FÍSICA Y REHABILITACIÓN', 31: 'NEUMOLOGIA PEDIATRICA',
+        44: 'ONCOLOGIA MEDICA', 5: 'CIRUGIA CABEZA Y CUELLO', 7: 'CIRUGIA MAXILO-FACIAL',
+        19: 'GINECOLOGIA DE ALTO RIESGO', 36: 'NEUROPSICOLOGIA', 52: 'PUERPERIO',
+        59: 'UNIDAD DEL DOLOR Y CUIDADOS PALIATIVOS', 3: 'CARDIOLOGIA PEDIATRICA',
+        41: 'ODONTOLOGIA', 53: 'RADIOTERAPIA', 9: 'CIRUGIA TORAXICA',
+        37: 'NUTRICION - ENDOCRINOLOGIA', 57: 'TUBERCULOSIS', 38: 'NUTRICION - MEDICINA',
+        22: 'INFECTOLOGIA PEDIATRICA', 30: 'NEUMOLOGIA FUNCION RESPIRATORIA',
+        39: 'NUTRICION - PEDIATRICA', 14: 'ENDOCRINOLOGIA PEDIATRICA',
+        55: 'SALUD MENTAL ', 23: 'INFERTILIDAD', 45: 'ONCOLOGIA QUIRURGICA',
+        32: 'NEUMOLOGIA TEST DE CAMINATA', 49: 'PLANIFICACION FAMILIAR',
+        24: 'MEDICINA ALTERNATIVA', 1: 'ANESTESIOLOGIA', 11: 'DERMATOLOGIA PEDIATRICA',
+        58: 'TUBERCULOSIS PEDIATRICA', 62: 'ZPRUEBA', 60: 'URODINAMIA',
+        15: 'ENDOCRINOLOGIA TUBERCULOSIS'
+    }
+    especialidad_to_cod = {nombre: codigo for codigo, nombre in especialidades_cod_a_nombre_predefinidas.items()}
+    unique_especialidades = sorted(list(especialidad_to_cod.keys())) # Para compatibilidad si aún se usa
+
+# --- Diccionario de especialidades (código a nombre) proporcionado por el usuario ---
+# Este diccionario se usará en el simulador para mostrar el nombre de la especialidad
+# en el resultado de la predicción. Es el original que ya tenías.
+especialidades_cod_a_nombre = {
+    17: 'GERIATRIA', 16: 'GASTROENTEROLOGIA', 13: 'ENDOCRINOLOGIA', 51: 'PSIQUIATRIA',
+    2: 'CARDIOLOGIA', 61: 'UROLOGIA', 50: 'PSICOLOGIA', 6: 'CIRUGIA GENERAL',
+    34: 'NEUROLOGIA', 20: 'HEMATOLOGIA', 26: 'MEDICINA INTERNA', 42: 'OFTALMOLOGIA',
+    54: 'REUMATOLOGIA', 4: 'CIRUGIA PLASTICA Y QUEMADOS', 33: 'NEUROCIRUGIA',
+    48: 'PEDIATRIA GENERAL', 27: 'NEFROLOGIA', 35: 'NEUROLOGIA PEDIATRICA',
+    40: 'OBSTETRICIA', 29: 'NEUMOLOGIA', 43: 'ONCOLOGIA GINECOLOGIA',
+    28: 'NEONATOLOGIA', 21: 'INFECTOLOGIA', 0: 'ADOLESCENTE', 18: 'GINECOLOGIA',
+    10: 'DERMATOLOGIA', 8: 'CIRUGIA PEDIATRICA', 56: 'TRAUMATOLOGIA',
+    47: 'PATOLOGIA MAMARIA', 46: 'OTORRINOLARINGOLOGIA', 12: 'ECOGRAFIA',
+    25: 'MEDICINA FÍSICA Y REHABILITACIÓN', 31: 'NEUMOLOGIA PEDIATRICA',
+    44: 'ONCOLOGIA MEDICA', 5: 'CIRUGIA CABEZA Y CUELLO', 7: 'CIRUGIA MAXILO-FACIAL',
+    19: 'GINECOLOGIA DE ALTO RIESGO', 36: 'NEUROPSICOLOGIA', 52: 'PUERPERIO',
+    59: 'UNIDAD DEL DOLOR Y CUIDADOS PALIATIVOS', 3: 'CARDIOLOGIA PEDIATRICA',
+    41: 'ODONTOLOGIA', 53: 'RADIOTERAPIA', 9: 'CIRUGIA TORAXICA',
+    37: 'NUTRICION - ENDOCRINOLOGIA', 57: 'TUBERCULOSIS', 38: 'NUTRICION - MEDICINA',
+    22: 'INFECTOLOGIA PEDIATRICA', 30: 'NEUMOLOGIA FUNCION RESPIRATORIA',
+    39: 'NUTRICION - PEDIATRICA', 14: 'ENDOCRINOLOGIA PEDIATRICA',
+    55: 'SALUD MENTAL ', 23: 'INFERTILIDAD', 45: 'ONCOLOGIA QUIRURGICA',
+    32: 'NEUMOLOGIA TEST DE CAMINATA', 49: 'PLANIFICACION FAMILIAR',
+    24: 'MEDICINA ALTERNATIVA', 1: 'ANESTESIOLOGIA', 11: 'DERMATOLOGIA PEDIATRICA',
+    58: 'TUBERCULOSIS PEDIATRICA', 62: 'ZPRUEBA', 60: 'URODINAMIA',
+    15: 'ENDOCRINOLOGIA TUBERCULOSIS'
+}
 
 
 # --- 3. Carga del Modelo de Machine Learning ---
@@ -389,7 +452,7 @@ app_tiempo.layout = html.Div([
     dcc.Graph(
         id='grafico-lineal',
         figure=px.line(citas_por_mes, x='MES', y='CANTIDAD_CITAS', markers=True,
-                         title='Cantidad de Citas por Mes')
+                       title='Cantidad de Citas por Mes')
     ),
     html.Div([
         dcc.Graph(id='grafico-pie-especialidades'),
@@ -430,61 +493,78 @@ def actualizar_graficos(clickData):
 # --- App 6: Simulador de Tiempo de Espera Estimado (Regresión) ---
 app_simulador = dash.Dash(__name__, server=server, url_base_pathname='/simulador/')
 app_simulador.layout = html.Div([
-    html.H1("Simulador de Tiempo de Espera Estimado"),
+    html.H1("Simulador de Tiempo de Espera Estimado", className="text-3xl font-bold mb-6 text-blue-800"),
     html.Div([
-        html.Label("Edad:"),
-        dcc.Input(id='sim-input-edad', type='number', value=30, min=0, max=120, className="input-field"),
-        html.Br(), # Salto de línea para mejor diseño
-        html.Label("Especialidad:"),
+        html.Label("Edad:", className="block text-gray-700 text-sm font-bold mb-2"),
+        dcc.Input(id='sim-input-edad', type='number', value=30, min=0, max=120,
+                  className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline mb-4"),
+
+        html.Label("Especialidad:", className="block text-gray-700 text-sm font-bold mb-2"),
         dcc.Dropdown(
             id='sim-input-especialidad',
-            options=[{'label': i, 'value': i} for i in unique_especialidades],
-            value=unique_especialidades[0] if unique_especialidades else None, # Establecer un valor por defecto si hay especialidades
+            # Las opciones ahora muestran el nombre (label) y pasan el código (value)
+            options=[{'label': nombre, 'value': codigo} for nombre, codigo in especialidad_to_cod.items()],
+            # Establecer un valor por defecto usando un código existente si el diccionario no está vacío
+            value=list(especialidad_to_cod.values())[0] if especialidad_to_cod else None,
             placeholder="Selecciona una especialidad",
-            className="dropdown-field"
+            className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline mb-6"
         ),
-        html.Br(), # Salto de línea para mejor diseño
-        html.Button('Predecir Tiempo de Espera', id='sim-predict-button', n_clicks=0, className="button-predict"),
-        html.Div(id='sim-output-prediction', style={'marginTop': '20px', 'fontSize': '20px', 'fontWeight': 'bold', 'color': '#3498db'})
-    ], style={'padding': '20px', 'border': '1px solid #ddd', 'borderRadius': '8px', 'maxWidth': '500px', 'margin': '20px auto', 'backgroundColor': '#fff', 'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'}),
-    html.Br(), # Salto de línea
-    # Enlace para volver al inicio
-    html.Div(dcc.Link('Volver a la Página Principal', href='/', style={'display': 'inline-block', 'marginTop': '20px', 'padding': '10px 20px', 'backgroundColor': '#f39c12', 'color': 'white', 'textDecoration': 'none', 'borderRadius': '5px'}))
-], style={'textAlign': 'center', 'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#f4f6f8', 'padding': '20px'})
+
+        html.Button(
+            'Predecir Tiempo de Espera',
+            id='sim-predict-button',
+            n_clicks=0,
+            className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg focus:outline-none focus:shadow-outline w-full transform transition-all duration-200 hover:scale-105"
+        ),
+
+        html.Div(
+            id='sim-output-prediction',
+            className="mt-6 p-4 bg-blue-100 border-l-4 border-blue-500 text-blue-700 text-center font-semibold rounded-lg text-xl"
+        )
+    ], className="bg-white p-8 rounded-lg shadow-xl max-w-lg mx-auto"), # Contenedor con mejores estilos
+
+    html.Div(dcc.Link(
+        'Volver a la Página Principal',
+        href='/',
+        className="inline-block mt-8 py-3 px-6 bg-yellow-600 hover:bg-yellow-700 text-white font-bold rounded-lg text-lg transition-all duration-200 hover:scale-105"
+    ))
+], className="min-h-screen bg-gray-100 flex flex-col items-center justify-center py-10 px-4") # Fondo y centrado
 
 
 @app_simulador.callback(
     Output('sim-output-prediction', 'children'),
     Input('sim-predict-button', 'n_clicks'),
     Input('sim-input-edad', 'value'),
-    Input('sim-input-especialidad', 'value'),
+    Input('sim-input-especialidad', 'value'), # Este 'value' ahora es el CÓDIGO de la especialidad
     prevent_initial_call=True
 )
-def predict_dias_espera(n_clicks, edad, especialidad):
+def predict_dias_espera(n_clicks, edad, especialidad_cod_input): # Renombramos para mayor claridad
     if n_clicks is None or n_clicks == 0:
         return "" # Estado inicial: no mostrar nada
 
     if modelo_forest is None:
-        return "Error: El modelo de predicción no se pudo cargar. No se puede realizar la predicción."
-    if edad is None or especialidad is None:
-        return "Por favor, ingrese todos los valores para la predicción."
+        return html.Div("Error: El modelo de predicción no se pudo cargar. No se puede realizar la predicción.", className="text-red-600 font-bold")
+
+    # Validaciones de entrada
+    if edad is None or not (0 <= edad <= 120):
+        return html.Div("Error: Edad no válida. Por favor, ingrese una edad entre 0 y 120.", className="text-red-600 font-bold")
+    if especialidad_cod_input is None:
+        return html.Div("Error: Por favor, seleccione una especialidad.", className="text-red-600 font-bold")
 
     # Obtener día y semana_del_año de la fecha actual para la predicción
-    # Tu modelo usa 'día' y 'semana_del_año'
     today = datetime.now()
     dia = today.day
-    semana_del_año = today.isocalendar()[1]
+    semana_del_año = today.isocalendar()[1] # isocalendar()[1] da la semana del año
 
-    # Codificar la especialidad usando el mapeo que creamos
-    especialidad_cod = especialidad_to_cod.get(especialidad)
-    if especialidad_cod is None:
-        return f"Error: La especialidad '{especialidad}' no está en la lista de especialidades conocidas para la predicción."
+    # La especialidad_cod_input YA es el código, no necesitamos buscarlo en especialidad_to_cod
+    # Para mostrar el nombre de la especialidad en el output, usamos el diccionario especialidades_cod_a_nombre
+    nombre_especialidad_para_mostrar = especialidades_cod_a_nombre.get(especialidad_cod_input, "Especialidad Desconocida")
 
     # Crear el DataFrame de entrada para el modelo
     # Las columnas deben coincidir *exactamente* con el entrenamiento:
     # ['ESPECIALIDAD_cod', 'EDAD', 'día', 'semana_del_año']
     input_data = pd.DataFrame([[
-        especialidad_cod,
+        especialidad_cod_input, # Usamos el código numérico directamente
         edad,
         dia,
         semana_del_año
@@ -499,20 +579,29 @@ def predict_dias_espera(n_clicks, edad, especialidad):
     try:
         # El modelo predice DIFERENCIA_DIAS (regresión)
         predicted_days = modelo_forest.predict(input_data)[0]
-        # Redondear el resultado para una presentación más amigable
-        predicted_days_rounded = max(0, round(predicted_days)) # Asegurar que no sea negativo
+        # Redondear el resultado para una presentación más amigable y asegurar que no sea negativo
+        predicted_days_rounded = max(0, round(predicted_days))
 
-        return f"El tiempo de espera estimado para esta cita es de **{predicted_days_rounded} días**."
+        return html.Div([
+            html.P(f"Para la especialidad de ", className="inline"),
+            html.Span(f"{nombre_especialidad_para_mostrar}", className="font-bold text-blue-800"),
+            html.P(f", el tiempo de espera estimado es de:", className="inline"),
+            html.P(f"{predicted_days_rounded} días", className="text-4xl font-extrabold text-green-700 mt-2")
+        ], className="prediction-output-text")
     except Exception as e:
-        return f"Error al realizar la predicción: {e}. Asegúrate de que los datos de entrada coincidan con lo que el modelo espera."
+        return html.Div(f"Error al realizar la predicción: {e}. Asegúrate de que los datos de entrada coincidan con lo que el modelo espera.", className="text-red-600 font-bold")
 
 # --- 6. Ejecutar el servidor (Para Render, Gunicorn ejecutará 'application') ---
 # 'application' es el nombre que Gunicorn buscará para iniciar tu app en Render.
-# Necesita ser la instancia de Flask que contiene todas tus Dash apps.
+# Ya que las apps Dash están montadas directamente en 'server', 'application' puede ser 'server'
 application = server
+
 
 if __name__ == '__main__':
     # Este bloque solo se ejecuta cuando corres el script localmente (python multi_app.py)
     # No se ejecuta en el entorno de Render cuando Gunicorn lo inicia.
     port = int(os.environ.get("PORT", 8050)) # Render asigna un puerto, localmente usa 8050
-    server.run(host='0.0.0.0', port=port, debug=True)
+    print(f"La aplicación se ejecutará en http://0.0.0.0:{port}/")
+    print(f"El simulador estará disponible en http://0.0.0.0:{port}/simulador/")
+    # Debug=True solo para desarrollo, deshabilitar en producción por seguridad y rendimiento
+    run_simple('0.0.0.0', port, application, use_reloader=True) # use_reloader=True para desarrollo local
