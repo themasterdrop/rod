@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: multiapp-dash
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: gunicorn multi_app:application
