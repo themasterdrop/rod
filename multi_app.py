@@ -158,7 +158,7 @@ especialidades = {17: 'GERIATRIA',
 
 server = Flask(__name__)
 # Inicializa la aplicación Dash principal con use_pages=True
-app = dash.Dash(__name__, server=server, use_pages=True, suppress_callback_exceptions=True)
+app = dash.Dash(__name__, server=server, use_pages=True, pages_folder="", suppress_callback_exceptions=True)
 
 # Ruta raíz para el menú principal
 @server.route('/')
