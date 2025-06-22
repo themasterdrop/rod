@@ -56,11 +56,17 @@ try:
     df = pd.read_csv(HF_DATA_URL)
     print("DataFrame descargado y cargado con éxito.")
 
-    # Convertir 'DIA_SOLICITACITA' a datetime y extraer 'MES'
+    print(f"Memoria inicial del DataFrame: {df.memory_usage(deep=True).sum() / (1024**2):.2f} MB")
+
+    for col in ['EDAD', 'DIFERENCIA_DIAS']:
+        if col in df.columns:
+            # Prueba con downcast para enteros y flotantes
+            df[col] = pd.to_numeric(df[col], downcast='integer', errors='ignore')
+            df[col] = pd.to_numeric(df[col], downcast='float', errors='ignore')
+
     df['DIA_SOLICITACITA'] = pd.to_datetime(df['DIA_SOLICITACITA'], errors='coerce')
     df['MES'] = df['DIA_SOLICITACITA'].dt.to_period('M').astype(str)
 
-    # Clasificación por edad
     def clasificar_edad(edad):
         if edad < 13: return "Niño"
         elif edad < 19: return "Adolescente"
@@ -69,7 +75,6 @@ try:
         else: return "Adulto mayor"
     df['Rango de Edad'] = df['EDAD'].apply(clasificar_edad)
 
-    # Clasificación por días de espera
     def clasificar_dias_visualizacion(dias):
         if dias < 10: return "0-9"
         elif dias < 20: return "10-19"
@@ -83,14 +88,23 @@ try:
         else: return "90+"
     df['RANGO_DIAS'] = df['DIFERENCIA_DIAS'].apply(clasificar_dias_visualizacion)
 
-    # Datos agrupados para la visualización de línea de tiempo
+    categorical_cols = ['ESPECIALIDAD', 'PRESENCIAL_REMOTO', 'SEGURO', 'ATENDIDO', 'SEXO',
+                        'MES', 'Rango de Edad', 'RANGO_DIAS'] # Añado 'MES', 'Rango de Edad' y 'RANGO_DIAS' aquí
+    
+    for col in categorical_cols:
+        if col in df.columns: # La comprobación sigue siendo útil
+            df[col] = df[col].astype('category')
+
+  
     citas_por_mes = df.groupby('MES').size().reset_index(name='CANTIDAD_CITAS')
+
+    print(f"Memoria después de la optimización: {df.memory_usage(deep=True).sum() / (1024**2):.2f} MB")
+ 
 
 except Exception as e:
     print(f"ERROR FATAL al cargar o preprocesar el DataFrame: {e}")
     # Define un DataFrame vacío con las columnas esperadas para evitar errores en las apps
     df = pd.DataFrame(columns=['DIA_SOLICITACITA', 'MES', 'EDAD', 'Rango de Edad', 'DIFERENCIA_DIAS', 'RANGO_DIAS', 'ESPECIALIDAD', 'PRESENCIAL_REMOTO', 'SEGURO', 'ATENDIDO', 'SEXO'])
-
 
 # --- Carga del Modelo de Machine Learning (joblib) ---
 print("--- Iniciando descarga y carga del modelo (multi_app.py) ---")
