@@ -711,3 +711,4 @@ if __name__ == '__main__':
     print(f"La aplicación se ejecutará en http://0.0.0.0:{port}/")
     print(f"El simulador estará disponible en http://0.0.0.0:{port}/simulador/")
     run_simple('0.0.0.0', port, application, use_reloader=True)
+
