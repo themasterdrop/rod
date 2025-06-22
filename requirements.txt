@@ -7,4 +7,4 @@ joblib
 gunicorn
 scikit-learn
 werkzeug
-Flask-Caching
+Flask-Caching==2.2.0
