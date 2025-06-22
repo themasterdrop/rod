@@ -3,34 +3,47 @@ from flask import Flask, render_template_string, send_from_directory
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
+from dash.caching import Cache # Importar Cache para memoización
 import plotly.express as px
 import os
-import joblib  # Importamos joblib para cargar el modelo
+import joblib
 import requests
-import io  # Necesario para manejar el contenido binario del modelo desde la URL
-from datetime import datetime # Necesario para 'día' y 'semana_del_año' en el simulador
-from werkzeug.serving import run_simple # Necesario para ejecutar la aplicación combinada
+import io
+from datetime import datetime
+from werkzeug.serving import run_simple
+
+# --- Configuración de la Caché ---
+# Es CRÍTICO que la carpeta 'cache-directory' exista y sea escribible
+# Puedes crearla manualmente o asegurarte de que el entorno de despliegue la cree.
+CACHE_DIRECTORY = './cache-directory'
+if not os.path.exists(CACHE_DIRECTORY):
+    os.makedirs(CACHE_DIRECTORY)
+    print(f"Directorio de caché creado: {CACHE_DIRECTORY}")
+
+# Configuración del caché
+CACHE_CONFIG = {
+    'CACHE_TYPE': 'filesystem', # Opciones: 'redis', 'memcached', 'simple', etc.
+    'CACHE_DIR': CACHE_DIRECTORY,
+    'CACHE_DEFAULT_TIMEOUT': 300 # Tiempo en segundos (5 minutos) antes de que un resultado expire
+}
+
 
 # --- 1. Carga de los Datos (DataFrame) ---
-# Se mantiene tu URL actual de Google Drive ya que has confirmado que funciona en Render.
 file_id_data = "1PWTw-akWr59Gu7MoHra5WXMKwllxK9bp"
 url_data = f"https://drive.google.com/uc?export=download&id={file_id_data}"
 
 print("Cargando DataFrame desde Google Drive...")
 try:
     df = pd.read_csv(url_data)
-    print("DataFrame cargado con éxito.")
-    # Verifica si el DataFrame tiene datos después de cargar
+    print(f"DataFrame cargado con éxito. Filas: {df.shape[0]}, Columnas: {df.shape[1]}")
     if df.empty:
         print("ADVERTENCIA: El DataFrame se cargó pero está vacío.")
 except Exception as e:
     print(f"Error al cargar el DataFrame: {e}. Se procederá con un DataFrame vacío.")
-    # Crea un DataFrame vacío en caso de error para evitar que la aplicación se detenga
     df = pd.DataFrame(columns=['EDAD', 'DIFERENCIA_DIAS', 'PRESENCIAL_REMOTO', 'SEGURO', 'SEXO', 'ESPECIALIDAD', 'DIA_SOLICITACITA', 'ATENDIDO'])
 
 # --- 2. Preprocesamiento de Datos para Visualizaciones y Mapeos ---
 
-# Clasificación por edad
 def clasificar_edad(edad):
     if edad < 13:
         return "Niño"
@@ -43,12 +56,11 @@ def clasificar_edad(edad):
     elif edad < 200:
         return "Adulto mayor"
 
-if 'EDAD' in df.columns and not df.empty: # Asegurarse de que la columna exista y df no esté vacío
+if 'EDAD' in df.columns and not df.empty:
     df['Rango de Edad'] = df['EDAD'].apply(clasificar_edad)
 else:
     print("ADVERTENCIA: La columna 'EDAD' no se encontró o el DataFrame está vacío. No se creará 'Rango de Edad'.")
 
-# Clasificación por días de espera
 def clasificar_dias(dias):
     if dias < 10:
         return "0-9"
@@ -71,40 +83,45 @@ def clasificar_dias(dias):
     else:
         return "90+"
 
-if 'DIFERENCIA_DIAS' in df.columns and not df.empty: # Asegurarse de que la columna exista y df no esté vacío
+if 'DIFERENCIA_DIAS' in df.columns and not df.empty:
     df['RANGO_DIAS'] = df['DIFERENCIA_DIAS'].apply(clasificar_dias)
 else:
     print("ADVERTENCIA: La columna 'DIFERENCIA_DIAS' no se encontró o el DataFrame está vacío. No se creará 'RANGO_DIAS'.")
 
-# Transformación para Línea de Tiempo
-if 'DIA_SOLICITACITA' in df.columns and not df.empty: # Asegurarse de que la columna exista y df no esté vacío
+if 'DIA_SOLICITACITA' in df.columns and not df.empty:
+    print(f"DEBUG: Columna 'DIA_SOLICITACITA' presente. Total de NaNs antes de conversión: {df['DIA_SOLICITACITA'].isnull().sum()}")
     df['DIA_SOLICITACITA'] = pd.to_datetime(df['DIA_SOLICITACITA'], errors='coerce')
-    df['MES'] = df['DIA_SOLICITACITA'].dt.to_period('M').astype(str)
-    citas_por_mes = df.groupby('MES').size().reset_index(name='CANTIDAD_CITAS')
+    print(f"DEBUG: Total de NaNs en 'DIA_SOLICITACITA' después de conversión: {df['DIA_SOLICITACITA'].isnull().sum()}")
+    
+    # Filtrar solo las filas con fechas válidas antes de crear 'MES' y agrupar
+    df_valid_dates = df.dropna(subset=['DIA_SOLICITACITA'])
+    print(f"DEBUG: Filas con fechas válidas para 'DIA_SOLICITACITA': {df_valid_dates.shape[0]}")
+
+    if not df_valid_dates.empty:
+        df_valid_dates['MES'] = df_valid_dates['DIA_SOLICITACITA'].dt.to_period('M').astype(str)
+        citas_por_mes = df_valid_dates.groupby('MES').size().reset_index(name='CANTIDAD_CITAS')
+        print(f"DEBUG: citas_por_mes DataFrame (primeras 5 filas):\n{citas_por_mes.head()}")
+        print(f"DEBUG: citas_por_mes DataFrame (últimas 5 filas):\n{citas_por_mes.tail()}")
+        print(f"DEBUG: Total de entradas en citas_por_mes: {citas_por_mes.shape[0]}")
+    else:
+        citas_por_mes = pd.DataFrame(columns=['MES', 'CANTIDAD_CITAS'])
+        print("ADVERTENCIA: No hay fechas válidas en 'DIA_SOLICITACITA'. 'citas_por_mes' estará vacío.")
 else:
     citas_por_mes = pd.DataFrame(columns=['MES', 'CANTIDAD_CITAS'])
     print("ADVERTENCIA: La columna 'DIA_SOLICITACITA' no se encontró o el DataFrame está vacío. 'citas_por_mes' estará vacío.")
 
 
 # --- Creación del mapeo de ESPECIALIDAD a ESPECIALIDAD_cod para el simulador ---
-# CRÍTICO: Este mapeo DEBE ser consistente con cómo se codificó 'ESPECIALIDAD'
-# cuando se entrenó el modelo. Si usaste un LabelEncoder y lo guardaste, cárgalo.
-# De lo contrario, ordenar alfabéticamente es una buena aproximación para consistencia.
-unique_especialidades = [] # Contendrá los nombres de las especialidades
-especialidad_to_cod = {} # Mapeo de NOMBRE -> CÓDIGO
+unique_especialidades = []
+especialidad_to_cod = {}
 
 if 'ESPECIALIDAD' in df.columns and not df.empty:
-    # Solo crea el mapeo si la columna existe y hay datos en el DataFrame
     unique_especialidades = sorted(df['ESPECIALIDAD'].unique().tolist())
-    # Asignar códigos basados en el orden alfabético para consistencia si no hay LabelEncoder guardado
     especialidad_to_cod = {especialidad: i for i, especialidad in enumerate(unique_especialidades)}
     print(f"Mapeo de especialidades creado a partir del DataFrame: {especialidad_to_cod}")
 else:
     print("La columna 'ESPECIALIDAD' no se encontró en el DataFrame o el DataFrame está vacío.")
     print("Usando un mapeo de especialidades predefinido para el simulador.")
-    # Si el DataFrame está vacío o no tiene la columna, usa un mapeo predefinido
-    # NOTA: Este mapeo DEBE ser el que usaste para entrenar tu modelo.
-    # El usuario proporcionó un diccionario {código: nombre}, lo invertimos aquí.
     especialidades_cod_a_nombre_predefinidas = {
         17: 'GERIATRIA', 16: 'GASTROENTEROLOGIA', 13: 'ENDOCRINOLOGIA', 51: 'PSIQUIATRIA',
         2: 'CARDIOLOGIA', 61: 'UROLOGIA', 50: 'PSICOLOGIA', 6: 'CIRUGIA GENERAL',
@@ -130,12 +147,8 @@ else:
         15: 'ENDOCRINOLOGIA TUBERCULOSIS'
     }
     especialidad_to_cod = {nombre: codigo for codigo, nombre in especialidades_cod_a_nombre_predefinidas.items()}
-    unique_especialidades = sorted(list(especialidad_to_cod.keys())) # Asegura que unique_especialidades tenga los nombres
+    unique_especialidades = sorted(list(especialidad_to_cod.keys()))
 
-
-# --- Diccionario de especialidades (código a nombre) proporcionado por el usuario ---
-# Este diccionario se usará en el simulador para mostrar el nombre de la especialidad
-# en el resultado de la predicción. Es el original que ya tenías.
 especialidades_cod_a_nombre = {
     17: 'GERIATRIA', 16: 'GASTROENTEROLOGIA', 13: 'ENDOCRINOLOGIA', 51: 'PSIQUIATRIA',
     2: 'CARDIOLOGIA', 61: 'UROLOGIA', 50: 'PSICOLOGIA', 6: 'CIRUGIA GENERAL',
@@ -163,21 +176,18 @@ especialidades_cod_a_nombre = {
 
 
 # --- 3. Carga del Modelo de Machine Learning ---
-# URL para el modelo en Hugging Face
 HF_MODEL_URL = "https://huggingface.co/themasterdrop/simulador_citas_modelo/resolve/main/modelo_forest.pkl?download=true"
 
 print("Descargando modelo desde Hugging Face...")
-modelo_forest = None # Inicializar a None en caso de error
+modelo_forest = None
 
 try:
     response = requests.get(HF_MODEL_URL)
-    response.raise_for_status() # Lanza una excepción si la descarga no es exitosa
+    response.raise_for_status()
 
-    # Usar io.BytesIO para tratar el contenido binario de la respuesta como un archivo en memoria
     model_bytes = io.BytesIO(response.content)
-    modelo_forest = joblib.load(model_bytes) # Carga el modelo con joblib
+    modelo_forest = joblib.load(model_bytes)
     print("¡Modelo cargado con éxito usando joblib!")
-    # Opcional: imprimir las características que el modelo espera, si el modelo tiene este atributo
     if hasattr(modelo_forest, 'feature_names_in_'):
         print(f"Características esperadas por el modelo: {modelo_forest.feature_names_in_}")
     else:
@@ -185,7 +195,7 @@ try:
 
 except requests.exceptions.RequestException as e:
     print(f"ERROR al descargar el modelo desde Hugging Face: {e}")
-except Exception as e: # Captura cualquier otro error, incluyendo errores específicos de joblib.load
+except Exception as e:
     print(f"ERROR inesperado al cargar el modelo con joblib: {e}")
     print("Asegúrate de que el archivo .pkl fue guardado correctamente con joblib y es compatible con el entorno.")
 
@@ -194,13 +204,13 @@ except Exception as e: # Captura cualquier otro error, incluyendo errores espec�
 
 server = Flask(__name__)
 
-# Ruta para servir archivos estáticos (como el logo.png)
+# Inicializar la caché con el servidor Flask
+cache = Cache(server, config=CACHE_CONFIG)
+
 @server.route('/static/<path:filename>')
 def static_files(filename):
-    # Asegúrate de que la carpeta 'static' existe en la raíz de tu proyecto
     return send_from_directory(os.path.join(server.root_path, 'static'), filename)
 
-# Página principal de Flask con enlaces a las apps Dash
 @server.route('/')
 def index():
     return render_template_string("""
@@ -269,7 +279,7 @@ def index():
                 <a href="/modalidad/">Modalidad de Atención</a>
                 <a href="/asegurados/">Estado del Seguro</a>
                 <a href="/tiempo/">Línea de Tiempo</a>
-                <a href="/simulador/">Simulador de Citas</a> <!-- Enlace al nuevo simulador -->
+                <a href="/simulador/">Simulador de Citas</a>
             </div>
         </div>
     </body>
@@ -300,6 +310,7 @@ app_edad.layout = html.Div([
     Output('pie-chart-edad', 'figure'),
     Input('histogram-edad', 'clickData')
 )
+@cache.memoize() # Decorador para cachear los resultados de esta función
 def update_pie_chart_edad(clickData):
     print(f"DEBUG: update_pie_chart_edad - clickData: {clickData}")
     if clickData is None:
@@ -308,7 +319,6 @@ def update_pie_chart_edad(clickData):
     selected_range = clickData['points'][0]['x']
     print(f"DEBUG: update_pie_chart_edad - selected_range: {selected_range}")
 
-    # Asegurarse de que 'Rango de Edad' exista antes de filtrar
     if 'Rango de Edad' not in df.columns or df.empty:
         print("DEBUG: update_pie_chart_edad - 'Rango de Edad' no está en df.columns o df está vacío.")
         return px.pie(names=[], values=[], title="Datos no disponibles para rango de edad", height=500)
@@ -323,7 +333,6 @@ def update_pie_chart_edad(clickData):
     top_especialidades = filtered_df['ESPECIALIDAD'].value_counts().nlargest(5)
     print(f"DEBUG: update_pie_chart_edad - Top especialidades: {top_especialidades.index.tolist()}")
 
-    # Solo agrupar si hay especialidades para evitar errores en apply
     if not top_especialidades.empty:
         filtered_df['ESPECIALIDAD_AGRUPADA'] = filtered_df['ESPECIALIDAD'].apply(
             lambda x: x if x in top_especialidades.index else 'Otras'
@@ -331,7 +340,7 @@ def update_pie_chart_edad(clickData):
         grouped = filtered_df['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
         grouped.columns = ['ESPECIALIDAD', 'CUENTA']
     else:
-        grouped = pd.DataFrame(columns=['ESPECIALIDAD', 'CUENTA']) # DataFrame vacío si no hay especialidades
+        grouped = pd.DataFrame(columns=['ESPECIALIDAD', 'CUENTA'])
 
     print(f"DEBUG: update_pie_chart_edad - Grouped data: {grouped.to_dict('records')}")
 
@@ -365,6 +374,7 @@ app_espera.layout = html.Div([
     Output('pie-chart-espera', 'figure'),
     Input('histogram-espera', 'clickData')
 )
+@cache.memoize() # Decorador para cachear los resultados de esta función
 def update_pie_chart_espera(clickData):
     print(f"DEBUG: update_pie_chart_espera - clickData: {clickData}")
     if clickData is None:
@@ -429,6 +439,7 @@ app_modalidad.layout = html.Div([
     Output('bar-especialidad-modalidad', 'figure'),
     Input('pie-modalidad', 'clickData')
 )
+@cache.memoize() # Decorador para cachear los resultados de esta función
 def update_bar_modalidad(clickData):
     print(f"DEBUG: update_bar_modalidad - clickData: {clickData}")
     if clickData is None:
@@ -485,6 +496,7 @@ app_seguro.layout = html.Div([
     Output('bar-espera-seguro', 'figure'),
     Input('pie-seguro', 'clickData')
 )
+@cache.memoize() # Decorador para cachear los resultados de esta función
 def update_bar_seguro(clickData):
     print(f"DEBUG: update_bar_seguro - clickData: {clickData}")
     if clickData is None:
@@ -516,7 +528,6 @@ def update_bar_seguro(clickData):
         labels={'DIFERENCIA_DIAS': 'Días de Espera'},
         template='plotly_white'
     )
-    # Considera ajustar este rango dinámicamente si tus datos varían mucho
     fig.update_yaxes(range=[mean_wait['DIFERENCIA_DIAS'].min() - 1, mean_wait['DIFERENCIA_DIAS'].max() + 1] if not mean_wait.empty else [0, 1])
     return fig
 
@@ -542,14 +553,14 @@ app_tiempo.layout = html.Div([
      Output('grafico-pie-atencion', 'figure')],
     [Input('grafico-lineal', 'clickData')]
 )
+@cache.memoize() # Decorador para cachear los resultados de esta función
 def actualizar_graficos(clickData):
     print(f"DEBUG: actualizar_graficos - clickData: {clickData}")
     if clickData is None:
-        # Crea figuras vacías para el estado inicial o cuando no hay selección
         return px.pie(names=[], values=[], title="Seleccione un mes"), \
                px.pie(names=[], values=[], title="Seleccione un mes")
 
-    mes_seleccionado = pd.to_datetime(clickData['points'][0]['x']).to_period('M').strftime('%Y-%m')
+    mes_seleccionado = clickData['points'][0]['x'] # mes_seleccionado ya viene como string del eje X
     print(f"DEBUG: actualizar_graficos - selected mes: {mes_seleccionado}")
 
     if 'MES' not in df.columns or df.empty:
@@ -561,18 +572,16 @@ def actualizar_graficos(clickData):
     df_mes = df[df['MES'] == mes_seleccionado]
     print(f"DEBUG: actualizar_graficos - df_mes shape: {df_mes.shape}")
 
-    # Asegurarse de que df_mes no esté vacío antes de continuar
     if df_mes.empty:
         print(f"DEBUG: actualizar_graficos - df_mes está vacío para el mes: {mes_seleccionado}")
         return px.pie(names=[], values=[], title=f"No hay datos para {mes_seleccionado}", height=500), \
                px.pie(names=[], values=[], title=f"No hay datos para {mes_seleccionado}", height=500)
 
-    # Gráfico de Especialidades
     fig_especialidades = px.pie(names=[], values=[], title=f"No hay datos de especialidad para {mes_seleccionado}", height=500)
     if 'ESPECIALIDAD' in df_mes.columns:
         top_especialidades = df_mes['ESPECIALIDAD'].value_counts().nlargest(5)
         if not top_especialidades.empty:
-            df_mes_copy_esp = df_mes.copy() # Usar una copia para evitar SettingWithCopyWarning
+            df_mes_copy_esp = df_mes.copy()
             df_mes_copy_esp['ESPECIALIDAD_AGRUPADA'] = df_mes_copy_esp['ESPECIALIDAD'].apply(
                 lambda x: x if x in top_especialidades.index else 'Otras'
             )
@@ -585,8 +594,6 @@ def actualizar_graficos(clickData):
     else:
         print("DEBUG: actualizar_graficos - Columna 'ESPECIALIDAD' no encontrada en df_mes.")
 
-
-    # Gráfico de Atención
     fig_atencion = px.pie(names=[], values=[], title=f"No hay datos de atención para {mes_seleccionado}", height=500)
     if 'ATENDIDO' in df_mes.columns:
         if not df_mes['ATENDIDO'].empty:
@@ -611,9 +618,7 @@ app_simulador.layout = html.Div([
         html.Label("Especialidad:", className="block text-gray-700 text-sm font-bold mb-2"),
         dcc.Dropdown(
             id='sim-input-especialidad',
-            # Las opciones ahora muestran el nombre (label) y pasan el código (value)
             options=[{'label': nombre, 'value': codigo} for nombre, codigo in especialidad_to_cod.items()],
-            # Establecer un valor por defecto usando un código existente si el diccionario no está vacío
             value=list(especialidad_to_cod.values())[0] if especialidad_to_cod else None,
             placeholder="Selecciona una especialidad",
             className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline mb-6"
@@ -630,54 +635,48 @@ app_simulador.layout = html.Div([
             id='sim-output-prediction',
             className="mt-6 p-4 bg-blue-100 border-l-4 border-blue-500 text-blue-700 text-center font-semibold rounded-lg text-xl"
         )
-    ], className="bg-white p-8 rounded-lg shadow-xl max-w-lg mx-auto"), # Contenedor con mejores estilos
+    ], className="bg-white p-8 rounded-lg shadow-xl max-w-lg mx-auto"),
 
     html.Div(dcc.Link(
         'Volver a la Página Principal',
         href='/',
         className="inline-block mt-8 py-3 px-6 bg-yellow-600 hover:bg-yellow-700 text-white font-bold rounded-lg text-lg transition-all duration-200 hover:scale-105"
     ))
-], className="min-h-screen bg-gray-100 flex flex-col items-center justify-center py-10 px-4") # Fondo y centrado
+], className="min-h-screen bg-gray-100 flex flex-col items-center justify-center py-10 px-4")
 
 
 @app_simulador.callback(
     Output('sim-output-prediction', 'children'),
     Input('sim-predict-button', 'n_clicks'),
     Input('sim-input-edad', 'value'),
-    Input('sim-input-especialidad', 'value'), # Este 'value' ahora es el CÓDIGO de la especialidad
+    Input('sim-input-especialidad', 'value'),
     prevent_initial_call=True
 )
-def predict_dias_espera(n_clicks, edad, especialidad_cod_input): # Renombramos para mayor claridad
+@cache.memoize() # También puedes cachear este callback si la predicción es costosa
+def predict_dias_espera(n_clicks, edad, especialidad_cod_input):
     print(f"DEBUG: predict_dias_espera - n_clicks: {n_clicks}, edad: {edad}, especialidad_cod_input: {especialidad_cod_input}")
     if n_clicks is None or n_clicks == 0:
-        return "" # Estado inicial: no mostrar nada
+        return ""
 
     if modelo_forest is None:
         print("DEBUG: predict_dias_espera - modelo_forest is None.")
         return html.Div("Error: El modelo de predicción no se pudo cargar. No se puede realizar la predicción.", className="text-red-600 font-bold")
 
-    # Validaciones de entrada
     if edad is None or not (0 <= edad <= 120):
         return html.Div("Error: Edad no válida. Por favor, ingrese una edad entre 0 y 120.", className="text-red-600 font-bold")
     if especialidad_cod_input is None:
         return html.Div("Error: Por favor, seleccione una especialidad.", className="text-red-600 font-bold")
 
-    # Obtener día y semana_del_año de la fecha actual para la predicción
     today = datetime.now()
     dia = today.day
-    semana_del_año = today.isocalendar()[1] # isocalendar()[1] da la semana del año
+    semana_del_año = today.isocalendar()[1]
     print(f"DEBUG: predict_dias_espera - día: {dia}, semana_del_año: {semana_del_año}")
 
-    # La especialidad_cod_input YA es el código, no necesitamos buscarlo en especialidad_to_cod
-    # Para mostrar el nombre de la especialidad en el output, usamos el diccionario especialidades_cod_a_nombre
     nombre_especialidad_para_mostrar = especialidades_cod_a_nombre.get(especialidad_cod_input, "Especialidad Desconocida")
     print(f"DEBUG: predict_dias_espera - nombre_especialidad_para_mostrar: {nombre_especialidad_para_mostrar}")
 
-    # Crear el DataFrame de entrada para el modelo
-    # Las columnas deben coincidir *exactamente* con el entrenamiento:
-    # ['ESPECIALIDAD_cod', 'EDAD', 'día', 'semana_del_año']
     input_data = pd.DataFrame([[
-        especialidad_cod_input, # Usamos el código numérico directamente
+        especialidad_cod_input,
         edad,
         dia,
         semana_del_año
@@ -691,9 +690,7 @@ def predict_dias_espera(n_clicks, edad, especialidad_cod_input): # Renombramos p
     print(f"DEBUG: predict_dias_espera - input_data for model: \n{input_data}")
 
     try:
-        # El modelo predice DIFERENCIA_DIAS (regresión)
         predicted_days = modelo_forest.predict(input_data)[0]
-        # Redondear el resultado para una presentación más amigable y asegurar que no sea negativo
         predicted_days_rounded = max(0, round(predicted_days))
         print(f"DEBUG: predict_dias_espera - Predicted days: {predicted_days_rounded}")
 
@@ -707,17 +704,10 @@ def predict_dias_espera(n_clicks, edad, especialidad_cod_input): # Renombramos p
         print(f"ERROR: predict_dias_espera - Error during prediction: {e}")
         return html.Div(f"Error al realizar la predicción: {e}. Asegúrate de que los datos de entrada coincidan con lo que el modelo espera.", className="text-red-600 font-bold")
 
-# --- 6. Ejecutar el servidor (Para Render, Gunicorn ejecutará 'application') ---
-# 'application' es el nombre que Gunicorn buscará para iniciar tu app en Render.
-# Ya que las apps Dash están montadas directamente en 'server', 'application' puede ser 'server'
 application = server
 
-
 if __name__ == '__main__':
-    # Este bloque solo se ejecuta cuando corres el script localmente (python multi_app.py)
-    # No se ejecuta en el entorno de Render cuando Gunicorn lo inicia.
-    port = int(os.environ.get("PORT", 8050)) # Render asigna un puerto, localmente usa 8050
+    port = int(os.environ.get("PORT", 8050))
     print(f"La aplicación se ejecutará en http://0.0.0.0:{port}/")
     print(f"El simulador estará disponible en http://0.0.0.0:{port}/simulador/")
-    # Debug=True solo para desarrollo, deshabilitar en producción por seguridad y rendimiento
-    run_simple('0.0.0.0', port, application, use_reloader=True) # use_reloader=True para desarrollo local
+    run_simple('0.0.0.0', port, application, use_reloader=True)
