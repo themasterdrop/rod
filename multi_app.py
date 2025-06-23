@@ -60,7 +60,6 @@ try:
 
     for col in ['EDAD', 'DIFERENCIA_DIAS']:
         if col in df.columns:
-            # Prueba con downcast para enteros y flotantes
             df[col] = pd.to_numeric(df[col], downcast='integer', errors='ignore')
             df[col] = pd.to_numeric(df[col], downcast='float', errors='ignore')
 
@@ -89,22 +88,25 @@ try:
     df['RANGO_DIAS'] = df['DIFERENCIA_DIAS'].apply(clasificar_dias_visualizacion)
 
     categorical_cols = ['ESPECIALIDAD', 'PRESENCIAL_REMOTO', 'SEGURO', 'ATENDIDO', 'SEXO',
-                        'MES', 'Rango de Edad', 'RANGO_DIAS'] # Añado 'MES', 'Rango de Edad' y 'RANGO_DIAS' aquí
+                        'MES', 'Rango de Edad', 'RANGO_DIAS']
     
     for col in categorical_cols:
-        if col in df.columns: # La comprobación sigue siendo útil
+        if col in df.columns:
             df[col] = df[col].astype('category')
-
-  
+    
+    # Calcular citas_por_mes aquí para que siempre esté disponible
     citas_por_mes = df.groupby('MES').size().reset_index(name='CANTIDAD_CITAS')
-
+    
     print(f"Memoria después de la optimización: {df.memory_usage(deep=True).sum() / (1024**2):.2f} MB")
- 
+    
 
 except Exception as e:
     print(f"ERROR FATAL al cargar o preprocesar el DataFrame: {e}")
     # Define un DataFrame vacío con las columnas esperadas para evitar errores en las apps
     df = pd.DataFrame(columns=['DIA_SOLICITACITA', 'MES', 'EDAD', 'Rango de Edad', 'DIFERENCIA_DIAS', 'RANGO_DIAS', 'ESPECIALIDAD', 'PRESENCIAL_REMOTO', 'SEGURO', 'ATENDIDO', 'SEXO'])
+    # Asegúrate de que citas_por_mes también se inicialice de forma segura si df falla
+    citas_por_mes = pd.DataFrame(columns=['MES', 'CANTIDAD_CITAS'])
+
 
 # --- Carga del Modelo de Machine Learning (joblib) ---
 print("--- Iniciando descarga y carga del modelo (multi_app.py) ---")
@@ -241,18 +243,28 @@ def update_pie_chart_edad(clickData):
     selected_range = clickData['points'][0]['x']
     filtered_df = df[df['Rango de Edad'] == selected_range].copy()
 
-    top_especialidades = filtered_df['ESPECIALIDAD'].value_counts().nlargest(5)
-    filtered_df['ESPECIALIDAD_AGRUPADA'] = filtered_df['ESPECIALIDAD'].apply(
-        lambda x: x if x in top_especialidades.index else 'Otras'
-    )
+    # --- INICIO DE LA CORRECCIÓN ---
+    especialidad_counts = filtered_df['ESPECIALIDAD'].value_counts()
+    
+    top_n = 5 # Definir cuántas especialidades top quieres mostrar
+    if len(especialidad_counts) > top_n:
+        top_especialidades_names = especialidad_counts.nlargest(top_n).index.tolist()
+        
+        pie_data = pd.DataFrame({
+            'ESPECIALIDAD': top_especialidades_names + ['Otras'],
+            'CUENTA': [especialidad_counts[name] for name in top_especialidades_names] + [especialidad_counts[~especialidad_counts.index.isin(top_especialidades_names)].sum()]
+        })
+    else:
+        # Si hay 5 o menos especialidades, no agrupamos nada en 'Otras'
+        pie_data = especialidad_counts.reset_index()
+        pie_data.columns = ['ESPECIALIDAD', 'CUENTA']
+    # --- FIN DE LA CORRECCIÓN ---
 
-    grouped = filtered_df['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
-    grouped.columns = ['ESPECIALIDAD', 'CUENTA']
     return px.pie(
-        grouped,
+        pie_data, # Usamos el DataFrame 'pie_data' que ya tiene las especialidades agrupadas
         names='ESPECIALIDAD',
         values='CUENTA',
-        title=f"Top 5 Especialidades para el rango de edad '{selected_range}'",
+        title=f"Top {top_n} Especialidades para el rango de edad '{selected_range}'",
         height=600
     )
 
@@ -285,18 +297,28 @@ def update_pie_chart_espera(clickData):
     selected_range = clickData['points'][0]['x']
     filtered_df = df[df['RANGO_DIAS'] == selected_range].copy()
 
-    top_especialidades = filtered_df['ESPECIALIDAD'].value_counts().nlargest(5)
-    filtered_df['ESPECIALIDAD_AGRUPADA'] = filtered_df['ESPECIALIDAD'].apply(
-        lambda x: x if x in top_especialidades.index else 'Otras'
-    )
+    # --- INICIO DE LA CORRECCIÓN ---
+    especialidad_counts = filtered_df['ESPECIALIDAD'].value_counts()
+    
+    top_n = 5 # Definir cuántas especialidades top quieres mostrar
+    if len(especialidad_counts) > top_n:
+        top_especialidades_names = especialidad_counts.nlargest(top_n).index.tolist()
+        
+        pie_data = pd.DataFrame({
+            'ESPECIALIDAD': top_especialidades_names + ['Otras'],
+            'CUENTA': [especialidad_counts[name] for name in top_especialidades_names] + [especialidad_counts[~especialidad_counts.index.isin(top_especialidades_names)].sum()]
+        })
+    else:
+        # Si hay 5 o menos especialidades, no agrupamos nada en 'Otras'
+        pie_data = especialidad_counts.reset_index()
+        pie_data.columns = ['ESPECIALIDAD', 'CUENTA']
+    # --- FIN DE LA CORRECCIÓN ---
 
-    grouped = filtered_df['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
-    grouped.columns = ['ESPECIALIDAD', 'CUENTA']
     return px.pie(
-        grouped,
+        pie_data, # Usamos el DataFrame 'pie_data'
         names='ESPECIALIDAD',
         values='CUENTA',
-        title=f"Top 5 Especialidades para el rango de espera '{selected_range}' días",
+        title=f"Top {top_n} Especialidades para el rango de espera '{selected_range}' días",
         height=600
     )
 
@@ -394,7 +416,7 @@ app_tiempo.layout = html.Div([
     dcc.Graph(
         id='grafico-lineal',
         figure=px.line(citas_por_mes, x='MES', y='CANTIDAD_CITAS', markers=True,
-                       title='Cantidad de Citas por Mes')
+                        title='Cantidad de Citas por Mes')
     ),
     html.Div([
         dcc.Graph(id='grafico-pie-especialidades'),
@@ -410,22 +432,29 @@ app_tiempo.layout = html.Div([
 )
 def actualizar_graficos(clickData):
     if clickData is None:
+        # Devuelve figuras vacías si no hay clickData
         return px.pie(names=[], values=[], title="Seleccione un mes"), px.pie(names=[], values=[], title="Seleccione un mes")
 
     mes_seleccionado = pd.to_datetime(clickData['points'][0]['x']).to_period('M').strftime('%Y-%m')
     df_mes = df[df['MES'] == mes_seleccionado].copy()
 
-    top_especialidades = df_mes['ESPECIALIDAD'].value_counts().nlargest(5)
-    df_mes['ESPECIALIDAD_AGRUPADA'] = df_mes['ESPECIALIDAD'].apply(
-        lambda x: x if x in top_especialidades.index else 'Otras'
-    )
+    # --- INICIO DE LA CORRECCIÓN PARA ESPECIALIDADES ---
+    especialidad_counts_mes = df_mes['ESPECIALIDAD'].value_counts()
+    
+    top_n = 5 # O el número que desees
+    if len(especialidad_counts_mes) > top_n:
+        top_especialidades_names_mes = especialidad_counts_mes.nlargest(top_n).index.tolist()
+        pie_data_especialidades = pd.DataFrame({
+            'ESPECIALIDAD': top_especialidades_names_mes + ['Otras'],
+            'CUENTA': [especialidad_counts_mes[name] for name in top_especialidades_names_mes] + [especialidad_counts_mes[~especialidad_counts_mes.index.isin(top_especialidades_names_mes)].sum()]
+        })
+    else:
+        pie_data_especialidades = especialidad_counts_mes.reset_index()
+        pie_data_especialidades.columns = ['ESPECIALIDAD', 'CUENTA']
+    # --- FIN DE LA CORRECCIÓN PARA ESPECIALIDADES ---
 
-    grouped = df_mes['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
-    grouped.columns = ['ESPECIALIDAD', 'CUENTA']
-    grouped = grouped.sort_values(by='CUENTA', ascending=False)
-
-    fig_especialidades = px.pie(grouped, names='ESPECIALIDAD', values="CUENTA", title=f'Distribución de Especialidades en {mes_seleccionado}')
-    fig_atencion = px.pie(df_mes, names='ATENDIDO', title=f'Estado de Atención en {mes_seleccionado}')
+    fig_especialidades = px.pie(pie_data_especialidades, names='ESPECIALIDAD', values="CUENTA", title=f'Distribución de Especialidades en {mes_seleccionado}')
+    fig_atencion = px.pie(df_mes, names='ATENDIDO', title=f'Estado de Atención en {mes_seleccionado}') # Esta parte ya estaba bien
 
     return fig_especialidades, fig_atencion
 
@@ -449,7 +478,7 @@ simulador_app.layout = html.Div([
         ),
         
         html.Button('Predecir Tiempo de Espera', id='sim-predict-button', n_clicks=0, className="button-predict",
-                    style={'backgroundColor': '#28a745', 'color': 'white', 'padding': '12px 25px', 'border': 'none', 'borderRadius': '5px', 'cursor': 'pointer', 'fontSize': '16px', 'transition': 'background-color 0.3s ease', 'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'}),
+                     style={'backgroundColor': '#28a745', 'color': 'white', 'padding': '12px 25px', 'border': 'none', 'borderRadius': '5px', 'cursor': 'pointer', 'fontSize': '16px', 'transition': 'background-color 0.3s ease', 'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'}),
         html.Div(id='sim-output-prediction', style={'marginTop': '30px', 'fontSize': '22px', 'fontWeight': 'bold', 'color': '#007bff'})
     ], style={'padding': '30px', 'border': '1px solid #e0e0e0', 'borderRadius': '10px', 'maxWidth': '550px', 'margin': '40px auto', 'backgroundColor': '#ffffff', 'boxShadow': '0 5px 15px rgba(0,0,0,0.08)'}),
     
@@ -497,12 +526,16 @@ def predecir(n_clicks, edad, especialidad_cod_input): # Renombrado a especialida
 
     try:
         predicted_days = modelo_forest.predict(input_data)[0]
-        predicted_days_rounded = max(0, round(predicted_days))
+        
+        # ELIMINADA LA LÍNEA DE REDONDEO AGRESIVO PARA REFLEJAR MEJOR EL MODELO
+        # predicted_days_rounded = max(0, round(predicted_days))
 
         # Recuperar el nombre de la especialidad para mostrarlo en el resultado
         nombre_especialidad = especialidades_dic.get(especialidad_cod_input, "Especialidad Desconocida")
 
-        return f"Especialidad: {nombre_especialidad} — Tiempo estimado de espera: ➡️ **{predicted_days_rounded} días**."
+        # Mostrar la predicción con dos decimales para mayor precisión
+        # Aseguramos que no sea negativo con max(0.0, ...)
+        return f"Especialidad: {nombre_especialidad} — Tiempo estimado de espera: ➡️ **{max(0.0, predicted_days):.2f} días**."
     except Exception as e:
         return f"❌ Error al realizar la predicción: {e}. Asegúrate de que los datos de entrada coincidan con lo que el modelo espera."
 
