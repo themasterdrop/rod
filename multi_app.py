@@ -17,7 +17,6 @@ HF_DATA_URL = "https://drive.google.com/uc?export=download&id=1PWTw-akWr59Gu7MoH
 HF_MODEL_URL = "https://huggingface.co/themasterdrop/simulador_citas_modelo/resolve/main/modelo_forest.pkl?download=true"
 
 # Diccionario de especialidades (tal cual lo proporcionaste)
-# Las claves son los códigos numéricos, los valores son los nombres de las especialidades.
 especialidades_dic = {
     17: 'GERIATRIA', 16: 'GASTROENTEROLOGIA', 13: 'ENDOCRINOLOGIA',
     51: 'PSIQUIATRIA', 2: 'CARDIOLOGIA', 61: 'UROLOGIA', 50: 'PSICOLOGIA',
@@ -53,70 +52,116 @@ df = pd.DataFrame() # Inicializa un DataFrame vacío para manejar posibles error
 citas_por_mes = pd.DataFrame(columns=['MES', 'CANTIDAD_CITAS']) # Inicializa vacío
 
 try:
-    df = pd.read_csv(HF_DATA_URL)
+    print(f"Intentando descargar datos desde: {HF_DATA_URL}")
+    response_data = requests.get(HF_DATA_URL)
+    response_data.raise_for_status() # Lanza una excepción para errores HTTP
+
+    # Usar io.BytesIO para leer el contenido binario directamente
+    df = pd.read_csv(io.BytesIO(response_data.content))
     print("DataFrame descargado y cargado con éxito.")
+    print(f"Dimensiones iniciales del DataFrame: {df.shape}")
+    print(f"Columnas del DataFrame: {df.columns.tolist()}")
 
     print(f"Memoria inicial del DataFrame: {df.memory_usage(deep=True).sum() / (1024**2):.2f} MB")
 
+    # Conversión de tipos y manejo de errores
     for col in ['EDAD', 'DIFERENCIA_DIAS']:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], downcast='integer', errors='ignore')
-            df[col] = pd.to_numeric(df[col], downcast='float', errors='ignore')
+            # Convertir a numérico, forzando NaNs para errores, luego a entero si es posible
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            # Intentar downcast a integer si no hay NaNs después de la conversión
+            if df[col].notna().all():
+                df[col] = df[col].astype('Int64') # Int64 soporta NaNs
+            else:
+                df[col] = df[col].astype(float) # Mantener como float si hay NaNs
 
-    df['DIA_SOLICITACITA'] = pd.to_datetime(df['DIA_SOLICITACITA'], errors='coerce')
-    df['MES'] = df['DIA_SOLICITACITA'].dt.to_period('M').astype(str)
+    # Procesar DIA_SOLICITACITA y MES
+    if 'DIA_SOLICITACITA' in df.columns:
+        df['DIA_SOLICITACITA'] = pd.to_datetime(df['DIA_SOLICITACITA'], errors='coerce')
+        # Eliminar filas con DIA_SOLICITACITA inválido si es crucial
+        df = df.dropna(subset=['DIA_SOLICITACITA'])
+        df['MES'] = df['DIA_SOLICITACITA'].dt.to_period('M').astype(str)
+        print(f"Valores únicos en 'MES' después de procesar: {df['MES'].unique().tolist()}")
+        print(f"Conteo de valores en 'MES':\n{df['MES'].value_counts(dropna=False)}")
+    else:
+        print("Advertencia: La columna 'DIA_SOLICITACITA' no se encontró en el DataFrame. No se podrá generar 'MES'.")
+        df['MES'] = 'UNKNOWN' # Define un valor por defecto si la columna no existe
 
-    def clasificar_edad(edad):
-        if edad < 13: return "Niño"
-        elif edad < 19: return "Adolescente"
-        elif edad < 30: return "Joven"
-        elif edad < 61: return "Adulto"
-        else: return "Adulto mayor"
-    df['Rango de Edad'] = df['EDAD'].apply(clasificar_edad)
+    # Clasificación de EDAD
+    if 'EDAD' in df.columns:
+        def clasificar_edad(edad):
+            if pd.isna(edad): return None
+            if edad < 13: return "Niño"
+            elif edad < 19: return "Adolescente"
+            elif edad < 30: return "Joven"
+            elif edad < 61: return "Adulto"
+            else: return "Adulto mayor" # Cambiado a 61+ para adulto mayor
+        df['Rango de Edad'] = df['EDAD'].apply(clasificar_edad)
+    else:
+        print("Advertencia: La columna 'EDAD' no se encontró en el DataFrame. No se podrá generar 'Rango de Edad'.")
+        df['Rango de Edad'] = None
 
-    def clasificar_dias_visualizacion(dias):
-        if dias < 10: return "0-9"
-        elif dias < 20: return "10-19"
-        elif dias < 30: return "20-29"
-        elif dias < 40: return "30-39"
-        elif dias < 50: return "40-49"
-        elif dias < 60: return "50-59"
-        elif dias < 70: return "60-69"
-        elif dias < 80: return "70-79"
-        elif dias < 90: return "80-89"
-        else: return "90+"
-    df['RANGO_DIAS'] = df['DIFERENCIA_DIAS'].apply(clasificar_dias_visualizacion)
+    # Clasificación de DIAS_DIFERENCIA
+    if 'DIFERENCIA_DIAS' in df.columns:
+        def clasificar_dias_visualizacion(dias):
+            if pd.isna(dias): return None
+            if dias < 10: return "0-9"
+            elif dias < 20: return "10-19"
+            elif dias < 30: return "20-29"
+            elif dias < 40: return "30-39"
+            elif dias < 50: return "40-49"
+            elif dias < 60: return "50-59"
+            elif dias < 70: return "60-69"
+            elif dias < 80: return "70-79"
+            elif dias < 90: return "80-89"
+            else: return "90+"
+        df['RANGO_DIAS'] = df['DIFERENCIA_DIAS'].apply(clasificar_dias_visualizacion)
+    else:
+        print("Advertencia: La columna 'DIFERENCIA_DIAS' no se encontró en el DataFrame. No se podrá generar 'RANGO_DIAS'.")
+        df['RANGO_DIAS'] = None
 
+    # Convertir a tipo 'category'
     categorical_cols = ['ESPECIALIDAD', 'PRESENCIAL_REMOTO', 'SEGURO', 'ATENDIDO', 'SEXO',
                         'MES', 'Rango de Edad', 'RANGO_DIAS']
-    
     for col in categorical_cols:
         if col in df.columns:
             df[col] = df[col].astype('category')
+        else:
+            print(f"Advertencia: La columna '{col}' no se encontró en el DataFrame y no se pudo convertir a categoría.")
     
     # Calcular citas_por_mes aquí para que siempre esté disponible
-    citas_por_mes = df.groupby('MES').size().reset_index(name='CANTIDAD_CITAS')
-    
+    if 'MES' in df.columns and not df['MES'].empty:
+        citas_por_mes = df.groupby('MES').size().reset_index(name='CANTIDAD_CITAS')
+        # Asegurarse de que el orden sea cronológico para la línea de tiempo
+        citas_por_mes['MES_DT'] = pd.to_datetime(citas_por_mes['MES'])
+        citas_por_mes = citas_por_mes.sort_values('MES_DT').drop(columns='MES_DT')
+        print(f"citas_por_mes calculado:\n{citas_por_mes.head()}")
+    else:
+        print("Advertencia: No se pudo calcular citas_por_mes. La columna 'MES' puede faltar o estar vacía.")
+        citas_por_mes = pd.DataFrame(columns=['MES', 'CANTIDAD_CITAS']) # Asegurarse de que esté vacío pero con columnas
+
     print(f"Memoria después de la optimización: {df.memory_usage(deep=True).sum() / (1024**2):.2f} MB")
     
-
+except requests.exceptions.RequestException as e:
+    print(f"ERROR: No se pudo descargar el DataFrame de datos desde {HF_DATA_URL}: {e}")
+    # Definir un DataFrame vacío con las columnas esperadas para evitar errores en las apps
+    df = pd.DataFrame(columns=['DIA_SOLICITACITA', 'MES', 'EDAD', 'Rango de Edad', 'DIFERENCIA_DIAS', 'RANGO_DIAS', 'ESPECIALIDAD', 'PRESENCIAL_REMOTO', 'SEGURO', 'ATENDIDO', 'SEXO'])
+    citas_por_mes = pd.DataFrame(columns=['MES', 'CANTIDAD_CITAS'])
 except Exception as e:
     print(f"ERROR FATAL al cargar o preprocesar el DataFrame: {e}")
-    # Define un DataFrame vacío con las columnas esperadas para evitar errores en las apps
     df = pd.DataFrame(columns=['DIA_SOLICITACITA', 'MES', 'EDAD', 'Rango de Edad', 'DIFERENCIA_DIAS', 'RANGO_DIAS', 'ESPECIALIDAD', 'PRESENCIAL_REMOTO', 'SEGURO', 'ATENDIDO', 'SEXO'])
-    # Asegúrate de que citas_por_mes también se inicialice de forma segura si df falla
     citas_por_mes = pd.DataFrame(columns=['MES', 'CANTIDAD_CITAS'])
-
 
 # --- Carga del Modelo de Machine Learning (joblib) ---
 print("--- Iniciando descarga y carga del modelo (multi_app.py) ---")
 modelo_forest = None # Inicializar a None en caso de error
 
 try:
-    response = requests.get(HF_MODEL_URL)
-    response.raise_for_status() # Lanza una excepción para errores HTTP
+    print(f"Intentando descargar modelo desde: {HF_MODEL_URL}")
+    response_model = requests.get(HF_MODEL_URL)
+    response_model.raise_for_status() # Lanza una excepción para errores HTTP
 
-    model_bytes = io.BytesIO(response.content)
+    model_bytes = io.BytesIO(response_model.content)
     modelo_forest = joblib.load(model_bytes) # Carga el modelo con joblib
     print("¡Modelo cargado con éxito usando joblib!")
 
@@ -219,7 +264,7 @@ app_edad = dash.Dash(__name__, server=server, url_base_pathname='/edad/')
 app_edad.layout = html.Div([
     html.H1("Distribución por Rango de Edad", style={'color': '#2c3e50'}),
     dcc.Graph(id='histogram-edad', figure=px.histogram(
-        df,
+        df, # Usar el df global
         x='Rango de Edad',
         category_orders={'Rango de Edad': ["Niño", "Adolescente", "Joven", "Adulto", "Adulto mayor"]},
         title='Distribución de edades de los pacientes del hospital María Auxiliadora',
@@ -237,34 +282,36 @@ app_edad.layout = html.Div([
     Input('histogram-edad', 'clickData')
 )
 def update_pie_chart_edad(clickData):
+    print(f"Callback update_pie_chart_edad activado con clickData: {clickData}")
     if clickData is None:
         return px.pie(names=[], values=[], title="Seleccione una barra en el histograma", height=500)
 
     selected_range = clickData['points'][0]['x']
-    filtered_df = df[df['Rango de Edad'] == selected_range].copy()
-
-    # --- INICIO DE LA CORRECCIÓN ---
-    especialidad_counts = filtered_df['ESPECIALIDAD'].value_counts()
+    print(f"Rango de edad seleccionado: {selected_range}")
     
-    top_n = 5 # Definir cuántas especialidades top quieres mostrar
-    if len(especialidad_counts) > top_n:
-        top_especialidades_names = especialidad_counts.nlargest(top_n).index.tolist()
-        
-        pie_data = pd.DataFrame({
-            'ESPECIALIDAD': top_especialidades_names + ['Otras'],
-            'CUENTA': [especialidad_counts[name] for name in top_especialidades_names] + [especialidad_counts[~especialidad_counts.index.isin(top_especialidades_names)].sum()]
-        })
-    else:
-        # Si hay 5 o menos especialidades, no agrupamos nada en 'Otras'
-        pie_data = especialidad_counts.reset_index()
-        pie_data.columns = ['ESPECIALIDAD', 'CUENTA']
-    # --- FIN DE LA CORRECCIÓN ---
+    # Asegúrate de trabajar con una copia explícita
+    filtered_df = df[df['Rango de Edad'] == selected_range].copy()
+    print(f"Dimensiones de filtered_df para edad: {filtered_df.shape}")
+    
+    if filtered_df.empty:
+        print("filtered_df (edad) está vacío, retornando figura vacía.")
+        return px.pie(names=[], values=[], title=f"No hay datos para el rango de edad '{selected_range}'", height=500)
+
+    # Lógica de agrupación de especialidades probada en tu código que funciona
+    top_especialidades = filtered_df['ESPECIALIDAD'].value_counts().nlargest(5)
+    filtered_df['ESPECIALIDAD_AGRUPADA'] = filtered_df['ESPECIALIDAD'].apply(
+        lambda x: x if x in top_especialidades.index else 'Otras'
+    )
+
+    grouped = filtered_df['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
+    grouped.columns = ['ESPECIALIDAD', 'CUENTA']
+    print(f"pie_data final para edad:\n{grouped.head()}")
 
     return px.pie(
-        pie_data, # Usamos el DataFrame 'pie_data' que ya tiene las especialidades agrupadas
+        grouped, # Usamos el DataFrame 'grouped'
         names='ESPECIALIDAD',
         values='CUENTA',
-        title=f"Top {top_n} Especialidades para el rango de edad '{selected_range}'",
+        title=f"Top 5 Especialidades para el rango de edad '{selected_range}'",
         height=600
     )
 
@@ -291,34 +338,36 @@ app_espera.layout = html.Div([
     Input('histogram-espera', 'clickData')
 )
 def update_pie_chart_espera(clickData):
+    print(f"Callback update_pie_chart_espera activado con clickData: {clickData}")
     if clickData is None:
         return px.pie(names=[], values=[], title="Seleccione una barra en el histograma", height=500)
 
     selected_range = clickData['points'][0]['x']
-    filtered_df = df[df['RANGO_DIAS'] == selected_range].copy()
-
-    # --- INICIO DE LA CORRECCIÓN ---
-    especialidad_counts = filtered_df['ESPECIALIDAD'].value_counts()
+    print(f"Rango de días seleccionado: {selected_range}")
     
-    top_n = 5 # Definir cuántas especialidades top quieres mostrar
-    if len(especialidad_counts) > top_n:
-        top_especialidades_names = especialidad_counts.nlargest(top_n).index.tolist()
-        
-        pie_data = pd.DataFrame({
-            'ESPECIALIDAD': top_especialidades_names + ['Otras'],
-            'CUENTA': [especialidad_counts[name] for name in top_especialidades_names] + [especialidad_counts[~especialidad_counts.index.isin(top_especialidades_names)].sum()]
-        })
-    else:
-        # Si hay 5 o menos especialidades, no agrupamos nada en 'Otras'
-        pie_data = especialidad_counts.reset_index()
-        pie_data.columns = ['ESPECIALIDAD', 'CUENTA']
-    # --- FIN DE LA CORRECCIÓN ---
+    # Asegúrate de trabajar con una copia explícita
+    filtered_df = df[df['RANGO_DIAS'] == selected_range].copy()
+    print(f"Dimensiones de filtered_df para espera: {filtered_df.shape}")
+
+    if filtered_df.empty:
+        print("filtered_df (espera) está vacío, retornando figura vacía.")
+        return px.pie(names=[], values=[], title=f"No hay datos para el rango de espera '{selected_range}'", height=500)
+
+    # Lógica de agrupación de especialidades probada en tu código que funciona
+    top_especialidades = filtered_df['ESPECIALIDAD'].value_counts().nlargest(5)
+    filtered_df['ESPECIALIDAD_AGRUPADA'] = filtered_df['ESPECIALIDAD'].apply(
+        lambda x: x if x in top_especialidades.index else 'Otras'
+    )
+
+    grouped = filtered_df['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
+    grouped.columns = ['ESPECIALIDAD', 'CUENTA']
+    print(f"pie_data final para espera:\n{grouped.head()}")
 
     return px.pie(
-        pie_data, # Usamos el DataFrame 'pie_data'
+        grouped, # Usamos el DataFrame 'grouped'
         names='ESPECIALIDAD',
         values='CUENTA',
-        title=f"Top {top_n} Especialidades para el rango de espera '{selected_range}' días",
+        title=f"Top 5 Especialidades para el rango de espera '{selected_range}' días",
         height=600
     )
 
@@ -346,13 +395,22 @@ app_modalidad.layout = html.Div([
     Input('pie-modalidad', 'clickData')
 )
 def update_bar_modalidad(clickData):
+    print(f"Callback update_bar_modalidad activado con clickData: {clickData}")
     if clickData is None:
         return px.bar(x=[], y=[], title="Seleccione una modalidad en el gráfico de pastel")
 
     modalidad = clickData['points'][0]['label']
-    filtered_df = df[df['PRESENCIAL_REMOTO'] == modalidad]
+    print(f"Modalidad seleccionada: {modalidad}")
+    filtered_df = df[df['PRESENCIAL_REMOTO'] == modalidad].copy() # Usar .copy()
+    print(f"Dimensiones de filtered_df para modalidad: {filtered_df.shape}")
+
+    if filtered_df.empty:
+        print("filtered_df (modalidad) está vacío, retornando figura vacía.")
+        return px.bar(x=[], y=[], title=f"No hay datos para la modalidad '{modalidad}'")
+
     mean_wait = filtered_df.groupby('ESPECIALIDAD')['DIFERENCIA_DIAS'].mean().reset_index()
     mean_wait = mean_wait.sort_values(by='DIFERENCIA_DIAS', ascending=False)
+    print(f"mean_wait para modalidad:\n{mean_wait.head()}")
 
     return px.bar(
         mean_wait,
@@ -364,7 +422,7 @@ def update_bar_modalidad(clickData):
    )
 
 
-# --- App 4: Por Estado de Seguro (Renombrada para evitar conflicto con app_modalidad original) ---
+# --- App 4: Por Estado de Seguro (CORREGIDO el url_base_pathname) ---
 app_asegurados = dash.Dash(__name__, server=server, url_base_pathname='/asegurados/')
 app_asegurados.layout = html.Div([
     html.H1("Distribución por Estado del Seguro", style={'color': '#2c3e50'}),
@@ -388,13 +446,22 @@ app_asegurados.layout = html.Div([
     Input('pie-seguro', 'clickData')
 )
 def update_bar_seguro(clickData):
+    print(f"Callback update_bar_seguro activado con clickData: {clickData}")
     if clickData is None:
         return px.bar(x=[], y=[], title="Seleccione una opción en el gráfico de pastel")
 
     seguro = clickData['points'][0]['label']
-    filtered_df = df[df['SEGURO'] == seguro]
+    print(f"Estado de seguro seleccionado: {seguro}")
+    filtered_df = df[df['SEGURO'] == seguro].copy() # Usar .copy()
+    print(f"Dimensiones de filtered_df para seguro: {filtered_df.shape}")
+
+    if filtered_df.empty:
+        print("filtered_df (seguro) está vacío, retornando figura vacía.")
+        return px.bar(x=[], y=[], title=f"No hay datos para el estado de seguro '{seguro}'")
+
     mean_wait = filtered_df.groupby('SEXO')['DIFERENCIA_DIAS'].mean().reset_index()
     mean_wait = mean_wait.sort_values(by='DIFERENCIA_DIAS', ascending=False)
+    print(f"mean_wait para seguro:\n{mean_wait.head()}")
 
     fig = px.bar(
         mean_wait,
@@ -431,33 +498,56 @@ app_tiempo.layout = html.Div([
     [Input('grafico-lineal', 'clickData')]
 )
 def actualizar_graficos(clickData):
+    print(f"Callback actualizar_graficos activado con clickData: {clickData}")
     if clickData is None:
-        # Devuelve figuras vacías si no hay clickData
         return px.pie(names=[], values=[], title="Seleccione un mes"), px.pie(names=[], values=[], title="Seleccione un mes")
 
-    mes_seleccionado = pd.to_datetime(clickData['points'][0]['x']).to_period('M').strftime('%Y-%m')
-    df_mes = df[df['MES'] == mes_seleccionado].copy()
+    mes_seleccionado_str = clickData['points'][0]['x']
+    print(f"Mes seleccionado (string desde clickData): {mes_seleccionado_str}")
 
-    # --- INICIO DE LA CORRECCIÓN PARA ESPECIALIDADES ---
-    especialidad_counts_mes = df_mes['ESPECIALIDAD'].value_counts()
+    # Asegurarse de que el formato de mes_seleccionado coincida con el de la columna 'MES' en df
+    # Si 'MES' en df es 'YYYY-MM', el clickData['points'][0]['x'] también debería serlo.
+    # El .to_period('M').strftime('%Y-%m') asegura consistencia.
+    try:
+        mes_seleccionado_period = pd.Period(mes_seleccionado_str, freq='M')
+        mes_para_filtro = str(mes_seleccionado_period)
+    except Exception as e:
+        print(f"Error al convertir mes_seleccionado_str a Period: {e}. Usando el valor original.")
+        mes_para_filtro = mes_seleccionado_str # Fallback
+
+    print(f"Mes usado para filtrar (formato YYYY-MM): {mes_para_filtro}")
     
-    top_n = 5 # O el número que desees
-    if len(especialidad_counts_mes) > top_n:
-        top_especialidades_names_mes = especialidad_counts_mes.nlargest(top_n).index.tolist()
-        pie_data_especialidades = pd.DataFrame({
-            'ESPECIALIDAD': top_especialidades_names_mes + ['Otras'],
-            'CUENTA': [especialidad_counts_mes[name] for name in top_especialidades_names_mes] + [especialidad_counts_mes[~especialidad_counts_mes.index.isin(top_especialidades_names_mes)].sum()]
-        })
-    else:
-        pie_data_especialidades = especialidad_counts_mes.reset_index()
-        pie_data_especialidades.columns = ['ESPECIALIDAD', 'CUENTA']
-    # --- FIN DE LA CORRECCIÓN PARA ESPECIALIDADES ---
+    # Asegúrate de trabajar con una copia explícita
+    filtered_df_mes = df[df['MES'] == mes_para_filtro].copy()
+    print(f"Dimensiones de filtered_df_mes para el mes {mes_para_filtro}: {filtered_df_mes.shape}")
 
-    fig_especialidades = px.pie(pie_data_especialidades, names='ESPECIALIDAD', values="CUENTA", title=f'Distribución de Especialidades en {mes_seleccionado}')
-    fig_atencion = px.pie(df_mes, names='ATENDIDO', title=f'Estado de Atención en {mes_seleccionado}') # Esta parte ya estaba bien
+    if filtered_df_mes.empty:
+        print(f"filtered_df_mes para {mes_para_filtro} está vacío, retornando figuras vacías.")
+        return (px.pie(names=[], values=[], title=f"No hay datos de especialidades para {mes_para_filtro}"),
+                px.pie(names=[], values=[], title=f"No hay datos de atención para {mes_para_filtro}"))
+
+    # Lógica de agrupación de especialidades probada en tu código que funciona
+    top_especialidades_mes = filtered_df_mes['ESPECIALIDAD'].value_counts().nlargest(5)
+    filtered_df_mes['ESPECIALIDAD_AGRUPADA'] = filtered_df_mes['ESPECIALIDAD'].apply(
+        lambda x: x if x in top_especialidades_mes.index else 'Otras'
+    )
+
+    grouped_especialidades = filtered_df_mes['ESPECIALIDAD_AGRUPADA'].value_counts().reset_index()
+    grouped_especialidades.columns = ['ESPECIALIDAD', 'CUENTA']
+    grouped_especialidades = grouped_especialidades.sort_values(by='CUENTA', ascending=False)
+    print(f"grouped_especialidades final para {mes_para_filtro}:\n{grouped_especialidades.head()}")
+
+    fig_especialidades = px.pie(grouped_especialidades, names='ESPECIALIDAD', values="CUENTA", title=f'Distribución de Especialidades en {mes_para_filtro}')
+    
+    # Para el gráfico de atención, verificar si la columna existe y tiene datos
+    if 'ATENDIDO' in filtered_df_mes.columns and not filtered_df_mes['ATENDIDO'].empty:
+        print(f"Conteo de estado de atención para {mes_para_filtro}:\n{filtered_df_mes['ATENDIDO'].value_counts(dropna=False)}")
+        fig_atencion = px.pie(filtered_df_mes, names='ATENDIDO', title=f'Estado de Atención en {mes_para_filtro}')
+    else:
+        print(f"Advertencia: La columna 'ATENDIDO' está vacía o no existe en filtered_df_mes para {mes_para_filtro}. No se generará el gráfico de atención.")
+        fig_atencion = px.pie(names=[], values=[], title=f"No hay datos de atención para {mes_para_filtro}")
 
     return fig_especialidades, fig_atencion
-
 
 # --- App 6: Simulador de Tiempo de Espera (NUEVA APP) ---
 simulador_app = dash.Dash(__name__, server=server, url_base_pathname='/simulador/')
@@ -470,8 +560,8 @@ simulador_app.layout = html.Div([
         html.Label("Especialidad:", style={'display': 'block', 'marginBottom': '5px', 'fontWeight': 'bold'}),
         dcc.Dropdown(
             id='sim-input-especialidad',
-            options=[{'label': v, 'value': k} for k, v in especialidades_dic.items()], # Aquí se usa especialidades_dic
-            value=17, # Valor por defecto (GERIATRIA) o el que prefieras
+            options=[{'label': v, 'value': k} for k, v in especialidades_dic.items()],
+            value=17,
             placeholder="Selecciona una especialidad",
             className="dropdown-field",
             style={'marginBottom': '20px'}
@@ -491,10 +581,10 @@ simulador_app.layout = html.Div([
     Output('sim-output-prediction', 'children'),
     Input('sim-predict-button', 'n_clicks'),
     Input('sim-input-edad', 'value'),
-    Input('sim-input-especialidad', 'value'), # Este es el código numérico
+    Input('sim-input-especialidad', 'value'),
     prevent_initial_call=True
 )
-def predecir(n_clicks, edad, especialidad_cod_input): # Renombrado a especialidad_cod_input
+def predecir(n_clicks, edad, especialidad_cod_input):
     if n_clicks is None or n_clicks == 0:
         return ""
 
@@ -503,16 +593,12 @@ def predecir(n_clicks, edad, especialidad_cod_input): # Renombrado a especialida
     if edad is None or especialidad_cod_input is None:
         return "⚠️ Por favor, ingrese la edad y seleccione una especialidad para la predicción."
 
-    # Obtener día y semana_del_año de la fecha actual
     today = datetime.now()
     dia = today.day
     semana_del_año = today.isocalendar()[1]
 
-    # Crear el DataFrame de entrada para el modelo
-    # Las columnas y su orden DEBEN coincidir con el entrenamiento del modelo:
-    # ['ESPECIALIDAD_cod', 'EDAD', 'día', 'semana_del_año']
     input_data = pd.DataFrame([[
-        especialidad_cod_input, # Usamos el código numérico directamente
+        especialidad_cod_input,
         edad,
         dia,
         semana_del_año
@@ -526,26 +612,17 @@ def predecir(n_clicks, edad, especialidad_cod_input): # Renombrado a especialida
 
     try:
         predicted_days = modelo_forest.predict(input_data)[0]
-        
-        # ELIMINADA LA LÍNEA DE REDONDEO AGRESIVO PARA REFLEJAR MEJOR EL MODELO
-        # predicted_days_rounded = max(0, round(predicted_days))
-
-        # Recuperar el nombre de la especialidad para mostrarlo en el resultado
         nombre_especialidad = especialidades_dic.get(especialidad_cod_input, "Especialidad Desconocida")
 
-        # Mostrar la predicción con dos decimales para mayor precisión
-        # Aseguramos que no sea negativo con max(0.0, ...)
         return f"Especialidad: {nombre_especialidad} — Tiempo estimado de espera: ➡️ **{max(0.0, predicted_days):.2f} días**."
     except Exception as e:
         return f"❌ Error al realizar la predicción: {e}. Asegúrate de que los datos de entrada coincidan con lo que el modelo espera."
 
 
 # --- Punto de Entrada para Gunicorn y Desarrollo Local ---
-# 'application' es el nombre que Gunicorn buscará para iniciar tu app en Render.
 application = server
 
 if __name__ == '__main__':
-    # Este bloque solo se ejecuta cuando corres el script localmente (python multi_app.py)
-    # No se ejecuta en el entorno de Render cuando Gunicorn lo inicia.
-    port = int(os.environ.get("PORT", 8050)) # Render asigna un puerto, localmente usa 8050
+    port = int(os.environ.get("PORT", 8050))
+    print(f"Iniciando servidor Flask-Dash en http://0.0.0.0:{port}")
     server.run(host='0.0.0.0', port=port, debug=True)
